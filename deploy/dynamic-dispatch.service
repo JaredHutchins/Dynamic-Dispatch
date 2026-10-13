@@ -1,0 +1,31 @@
+# dynamic-dispatch.service - run DD at boot, and again if it dies.
+#
+# Replaces starting it by hand with nohup. See deploy/README.md to install.
+#
+# No sandboxing options such as NoNewPrivileges: DD must reach
+# the agent launcher through sudo, and those would stop sudo working.
+
+[Unit]
+Description=Dynamic Dispatch
+# It polls Plane from the first cycle, so wait for a usable network.
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=3
+OnFailure=dynamic-dispatch-rollback.service
+
+[Service]
+Type=simple
+User=DD_USER
+WorkingDirectory=DD_CHECKOUT
+ExecStart=/usr/bin/python3 main.py
+# main() sets this too; setting it here covers anything before that line.
+UMask=0022
+# Not "always": a clean stop, or a --once run, stays stopped.
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

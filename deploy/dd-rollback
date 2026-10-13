@@ -1,0 +1,164 @@
+#!/usr/bin/python3
+"""Installed recovery helper: deliberately independent of DD's checkout imports."""
+
+import base64
+import json
+import os
+from pathlib import Path
+import re
+import secrets
+import string
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.parse
+import urllib.request
+
+SERVICE = 'dynamic-dispatch.service'
+
+
+def command(args, **kwargs):
+    return subprocess.run(args, check=True, capture_output=True, text=True, timeout=60, **kwargs)
+
+
+def git(checkout, *args, check=True):
+    result = subprocess.run(['git', '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false',
+                             *args], cwd=checkout, capture_output=True, text=True, timeout=60,
+                            env=dict(os.environ, GIT_TERMINAL_PROMPT='0'))
+    if check and result.returncode:
+        raise RuntimeError('Recovery Git command failed')
+    return result
+
+
+def save(checkout, state):
+    folder = checkout / '.dd-recovery'
+    folder.mkdir(mode=0o700, exist_ok=True)
+    name = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', dir=folder, delete=False) as out:
+            name = out.name
+            json.dump(state, out)
+            out.flush()
+            os.fsync(out.fileno())
+        os.replace(name, folder / 'state.json')
+        fd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    finally:
+        if name and os.path.exists(name):
+            os.unlink(name)
+
+
+def recover(checkout):
+    state = {}
+    try:
+        try:
+            state = json.loads((checkout / '.dd-recovery' / 'state.json').read_text())
+        except FileNotFoundError:
+            pass
+        if state.get('down'):
+            return {'restart': False, 'message': None}
+        planned = state.get('planned_restart')
+        if isinstance(planned, (int, float)) and 0 <= time.time() - planned <= 300:
+            return {'restart': True, 'message': None,
+                    'log': 'Start limit hit after a planned restart within five minutes; '
+                           'clearing the start limit and restarting DD without rollback'}
+        good = state.get('last_good', '')
+        head = git(checkout, 'rev-parse', 'HEAD').stdout.strip()
+        if not re.fullmatch(r'[0-9a-f]{40,64}', good):
+            raise RuntimeError('No last good commit')
+        if good == state.get('rolled_back') or good == head:
+            raise RuntimeError('Last good also failed')
+        filters = git(checkout, 'config', '--get-regexp', r'^filter\.', check=False)
+        if filters.returncode != 1:
+            raise RuntimeError('Git filters are not safe for recovery')
+        if git(checkout, 'status', '--porcelain', '--untracked-files=no').stdout.strip():
+            raise RuntimeError('Checkout has local changes')
+        git(checkout, 'cat-file', '-e', good + '^{commit}')
+        # Claim before changing files: an interrupted attempt must never loop.
+        state.update(failed=head, rolled_back=good)
+        save(checkout, state)
+        git(checkout, 'checkout', '--detach', good)
+        return {'restart': True,
+                'message': f'DD rolled back to {good[:12]} because {head[:12]} kept failing to start'}
+    except Exception:
+        if not isinstance(state, dict):
+            state = {}
+        state['down'] = True
+        save(checkout, state)
+        return {'restart': False, 'message': 'DD is down and needs a hand'}
+
+
+def notify(checkout, message):
+    """Use the already-supported optional Bark encryption package, never DD code."""
+    if not message:
+        return
+    print(message, file=sys.stderr)
+    try:
+        settings = json.loads((checkout / 'config.json').read_text())['alerts']
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        cipher = AESGCM(settings['encryption_key'].encode('utf-8'))
+        payload = json.dumps(dict(title='DD recovery', body=message, group='DD recovery',
+                                  level='active', sound='alarm')).encode('utf-8')
+        for device in settings['device_keys']:
+            try:
+                iv = ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(12))
+                form = urllib.parse.urlencode({
+                    'iv': iv, 'ciphertext': base64.b64encode(
+                        cipher.encrypt(iv.encode('ascii'), payload, None)).decode('ascii'),
+                }).encode('ascii')
+                endpoint = settings['bark_url'].rstrip('/') + '/' + urllib.parse.quote(device, safe='')
+                with urllib.request.urlopen(urllib.request.Request(endpoint, data=form), timeout=10) as response:
+                    if json.loads(response.read(4096)).get('code') != 200:
+                        raise ValueError('Bark refused alert')
+            except Exception:
+                print('Could not deliver DD recovery alert', file=sys.stderr)
+    except Exception:
+        print('DD recovery alert unavailable; check Bark configuration', file=sys.stderr)
+
+
+def main():
+    # Only the installed parent controls systemd. Git, config and state run as DD's user.
+    if len(sys.argv) == 3 and sys.argv[1] == 'recover':
+        print(json.dumps(recover(Path(sys.argv[2]))))
+        return
+    if len(sys.argv) == 4 and sys.argv[1] == 'notify':
+        notify(Path(sys.argv[2]), sys.argv[3])
+        return
+    result = command(['systemctl', 'show', SERVICE, '--property=Result', '--value']).stdout.strip()
+    if result != 'start-limit-hit':
+        return  # Some systemd versions also trigger OnFailure during automatic retries.
+    properties = command(['systemctl', 'show', SERVICE,
+                          '--property=User', '--property=WorkingDirectory']).stdout
+    settings = dict(line.split('=', 1) for line in properties.splitlines() if '=' in line)
+    user = settings.get('User', '')
+    checkout = settings.get('WorkingDirectory', '')
+    if not user or not Path(checkout).is_absolute():
+        raise RuntimeError('DD service must define User and an absolute WorkingDirectory')
+    child = ['runuser', '-u', user, '--', '/usr/bin/python3', str(Path(__file__).resolve())]
+    command(['systemctl', 'stop', SERVICE])
+    try:
+        outcome = json.loads(command([*child, 'recover', checkout]).stdout)
+        if outcome.get('log'):
+            print(outcome['log'], file=sys.stderr)
+        # Finish notification before starting DD: slow Bark must not keep this
+        # oneshot active when a failing fallback triggers OnFailure again.
+        if outcome['message']:
+            try:
+                delivery = command([*child, 'notify', checkout, outcome['message']])
+                if delivery.stderr:
+                    print(delivery.stderr.strip(), file=sys.stderr)
+            except Exception:
+                print('Could not deliver DD recovery alert', file=sys.stderr)
+        if outcome['restart']:
+            command(['systemctl', 'reset-failed', SERVICE])
+            command(['systemctl', 'restart', SERVICE])
+    except Exception:
+        command([*child, 'notify', checkout, 'DD is down and needs a hand'])
+
+
+if __name__ == '__main__':
+    main()

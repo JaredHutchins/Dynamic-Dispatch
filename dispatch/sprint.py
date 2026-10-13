@@ -1,0 +1,194 @@
+"""Start ready approved Cycle stories, hold work outside an active Cycle, and remind about Blocked ones."""
+
+from datetime import datetime
+import http.client
+import json
+
+from . import alerts, choose, cycle_dates, mainhealth, plane, runs, stories, sync
+
+
+PLANE_ERRORS = (plane.PlaneError, OSError, ValueError, http.client.HTTPException)
+
+
+def poll(cfg, conn):
+    for name, project in cfg['projects'].items():
+        if not project.get('cycles'):
+            continue
+        client = plane.orchestrator(cfg)
+        try:
+            cycle_list = client.cycles(project['plane_project_id'])
+        except PLANE_ERRORS as exc:
+            runs.record_event(conn, None, 'warning', f'Could not list Cycles; retrying next poll: {exc}', project=name)
+            continue
+        # Reminders carry on while main is red: a Blocked story still needs the approver.
+        try:
+            remind_blocked(cfg, conn, client, name, project, cycle_list)
+        except PLANE_ERRORS as exc:
+            runs.record_event(conn, None, 'warning',
+                              f'Could not check Blocked Cycle stories; retrying next poll: {exc}', project=name)
+        if mainhealth.stopped(conn, name):
+            continue
+        try:
+            start_ready(cfg, conn, client, name, project, cycle_list)
+        except PLANE_ERRORS as exc:
+            runs.record_event(conn, None, 'warning', f'Could not start Cycle stories; retrying next poll: {exc}',
+                              project=name)
+
+
+def start_ready(cfg, conn, client, name, project, cycle_list=None):
+    project_id = project['plane_project_id']
+    now = datetime.now().astimezone()
+    board = None
+    for cycle in cycle_list if cycle_list is not None else client.cycles(project_id):
+        if (not cycle.get('start_date') or not cycle.get('end_date')
+                or not cycle_dates.moment(cycle['start_date']) <= now
+                <= cycle_dates.moment(cycle['end_date'], end=True)):
+            continue
+        plan = runs.cycle_plan(conn, name, cycle['id'])
+        if plan is None or plan['status'] != runs.PLAN_APPROVED:
+            continue
+        approval = runs.plan_approval(conn, name, cycle['id'])
+        if approval is None:
+            continue
+        report = runs.plan_report(conn, approval['snapshot_id'])
+        if report is None:
+            continue
+        merged = json.loads(report['merged'])['merged']
+        if merged['loops']:
+            continue
+        members = {issue['id'] for issue in client.cycle_issues(project_id, cycle['id'])}
+        # A failed membership reconciliation must not let an obsolete approval start work.
+        if members - runs.plan_issue_ids(conn, name) != set(json.loads(approval['members'])):
+            continue
+        if board is None:
+            board = {issue['id']: issue for issue in client.issues(project_id)}
+        start_order(cfg, conn, client, name, project, merged, members, board)
+
+
+def start_order(cfg, conn, client, name, project, merged, members, board):
+    states = project['states']
+    def state(issue_id):
+        return plane.state_id(board.get(issue_id, {}))
+
+    for issue_id in merged['order']:
+        if (issue_id not in members or state(issue_id) != project['cycles']['sprint_backlog_state']
+                or runs.is_active(conn, issue_id) or runs.is_plan_item(conn, issue_id)):
+            continue
+        issue = board[issue_id]
+        labels = [label['id'] if isinstance(label, dict) else label for label in issue.get('labels') or []]
+        if project.get('human_only_label_id') in labels:
+            continue
+        story = merged['stories'][issue_id]
+        if any(state(dep) != states['done'] for dep in story['depends_on']):
+            continue
+        if any(state(other) in (states['in_progress'], states['in_review']) for other in story['overlaps']):
+            continue
+        agent = choose.agent_for(cfg, conn, project, issue_id)
+        if agent is None or mainhealth.stopped(conn, name):
+            return
+        client.set_state(project['plane_project_id'], issue_id, states['in_progress'])
+        issue['state'] = states['in_progress']
+        runs.record_event(conn, None, 'sprint_start', 'Approved Cycle story moved to In Progress',
+                          project=name, issue_id=issue_id)
+        # The ordinary queue reserves this account across Cycles and projects. If DD stops
+        # between the Plane write and enqueue, normal In Progress polling recovers the story.
+        branch = stories.branch_name(project, issue)
+        if runs.enqueue(conn, project=name, issue=issue, agent=agent, branch=branch) is None:
+            return
+
+
+def approved_cycles(conn, client, name, project, cycle_list=None):
+    """Started Cycles whose plan has been approved, including during a re-plan and after the end date.
+
+    Only these Cycles' members are read; an unapproved past Cycle's are not.
+    """
+    now = datetime.now().astimezone()
+    for cycle in cycle_list if cycle_list is not None else client.cycles(project['plane_project_id']):
+        if (not runs.cycle_complete(conn, name, cycle['id'])
+                and cycle.get('start_date') and cycle.get('end_date')
+                and cycle_dates.moment(cycle['start_date']) <= now
+                and runs.plan_approval(conn, name, cycle['id']) is not None):
+            yield cycle
+
+
+def active_cycle(conn, client, name, project, skip=(), cycle_list=None):
+    """The approved, started Cycle with a story not yet Done, or None, passing over the Cycle IDs in skip.
+
+    Its 'members' are its stories' IDs and 'open' the stories not yet Done. An overrunning
+    Cycle stays active after its end date until its last story is Done.
+    """
+    if not project.get('cycles'):
+        return None
+    for cycle in approved_cycles(conn, client, name, project, cycle_list):
+        if cycle['id'] in skip:
+            continue
+        members = {issue['id']: issue for issue in client.cycle_issues(project['plane_project_id'], cycle['id'])
+                   if not runs.is_plan_item(conn, issue['id'])}
+        unfinished = [issue for issue in members.values() if plane.state_id(issue) != project['states']['done']]
+        if unfinished:
+            return dict(cycle, members=set(members), open=unfinished)
+        if cycle_dates.moment(cycle['end_date'], end=True) < datetime.now().astimezone():
+            runs.complete_cycle(conn, name, cycle['id'])
+    return None
+
+
+def held_stories(cfg, conn, name, project, issues):
+    """The IDs of In Progress stories that wait for the active Cycle instead of being queued.
+
+    Each held story gets one notice per Cycle and is released once the Cycle is complete.
+    Fix main, the Cycle's own stories (rework included) and work DD queued before the
+    Cycle was approved are never held. Stories with an active run, and plan items, are the
+    queue's to skip, so they are left alone here. With no active Cycle nothing is held.
+    """
+    if not project.get('cycles'):
+        return set()
+    fix = mainhealth.fix_story(conn, name)
+    candidates = {issue['id'] for issue in issues if issue['id'] != fix and not runs.is_active(conn, issue['id'])
+                  and not runs.is_plan_item(conn, issue['id'])}
+    if not candidates:
+        return set()
+    client = plane.orchestrator(cfg)
+    try:
+        cycle = active_cycle(conn, client, name, project)
+        if cycle is None:
+            return set()
+        held = {issue_id for issue_id in candidates if issue_id not in cycle['members']
+                and not runs.started_before_approval(conn, name, cycle['id'], issue_id)}
+        for issue_id in sorted(held):
+            announce_hold(conn, client, name, project, cycle['id'], issue_id)
+        return held
+    except PLANE_ERRORS as exc:
+        # Without the Cycle's members DD can't tell outside work apart, so nothing new starts this poll.
+        runs.record_event(conn, None, 'warning', f'Could not check the active Cycle; retrying next poll: {exc}',
+                          project=name)
+        return candidates
+
+
+def announce_hold(conn, client, name, project, cycle_id, issue_id):
+    if runs.sprint_hold_announced(conn, name, cycle_id, issue_id):
+        return
+    # The marker finds a comment whose reply was lost before the store recorded it.
+    marker = f'[dd:cycle-hold {cycle_id}]'
+    if not client.has_comment_with(project['plane_project_id'], issue_id, marker):
+        client.comment(project['plane_project_id'], issue_id, sync.CYCLE_HOLD, marker=marker)
+    runs.mark_sprint_hold(conn, name, cycle_id, issue_id)
+
+
+def remind_blocked(cfg, conn, client, name, project, cycle_list=None):
+    """Repeat each Blocked Cycle story's alert every cycles.blocked_reminder_minutes until it leaves Blocked."""
+    blocked = set()
+    for cycle in approved_cycles(conn, client, name, project, cycle_list):
+        members = [issue for issue in client.cycle_issues(project['plane_project_id'], cycle['id'])
+                   if not runs.is_plan_item(conn, issue['id'])]
+        if (cycle_dates.moment(cycle['end_date'], end=True) < datetime.now().astimezone()
+                and all(plane.state_id(issue) == project['states']['done'] for issue in members)):
+            runs.complete_cycle(conn, name, cycle['id'])
+        for issue in members:
+            if plane.state_id(issue) == project['states']['blocked'] and not runs.is_plan_item(conn, issue['id']):
+                blocked.add(issue['id'])
+    runs.clear_blocked_reminders(conn, name, blocked)
+    for issue_id in sorted(blocked):
+        message = runs.blocked_reminder(conn, name, issue_id, project['cycles']['blocked_reminder_minutes'],
+                                        sync.CYCLE_BLOCKED)
+        if message is not None:
+            alerts.blocked(cfg, name, issue_id, message)

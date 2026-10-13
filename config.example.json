@@ -1,0 +1,91 @@
+{
+  "poll_interval_seconds": 30,
+  "db_path": "/home/YOUR_USER/.local/share/dynamic-dispatch/runs.db",
+  "failed_worktree_days": 7,
+  "usage_limit_cooldown_minutes": 60,
+
+  "plane": {
+    "base_url": "https://plane.example.com",
+    "workspace_slug": "YOUR_WORKSPACE_SLUG",
+    "orchestrator_token": "PLANE_ORCHESTRATOR_PAT",
+    "approver_user_id": "PLANE_APPROVER_USER_ID"
+  },
+
+  "github": {
+    "token": "GITHUB_FINE_GRAINED_PAT",
+    "approver": "YOUR_GITHUB_USERNAME",
+    "app_id": "GITHUB_APP_ID",
+    "installation_id": "GITHUB_APP_INSTALLATION_ID",
+    "private_key_path": "/home/YOUR_USER/.config/dynamic-dispatch/github-app.pem"
+  },
+
+  "alerts": {
+    "bark_url": "http://YOUR_BARK_SERVER:8080",
+    "device_keys": ["YOUR_BARK_DEVICE_KEY"],
+    "encryption_key": "YOUR_32_CHARACTER_ENCRYPTION_KEY"
+  },
+
+  "sandbox": {
+    "user": "dd-agent",
+    "launcher": "/usr/local/bin/dd-agent-run"
+  },
+
+  "agents": {
+    "claude-code": {
+      "max_concurrent": 1,
+      "display_name": "Claude",
+      "plane_token": "PLANE_CLAUDE_PAT",
+      "prompt_via": "stdin",
+      "command": ["claude", "-p", "--model", "opus", "--output-format", "json", "--dangerously-skip-permissions"],
+      "parser": "claude_json",
+      "run_as": "dd-agent",
+      "group": "dd-agent",
+      "env_file": "/etc/dynamic-dispatch/claude.env",
+      "git_author": { "name": "Claude", "email": "claude@example.com" },
+      "timeout_seconds": 1800
+    },
+    "codex": {
+      "max_concurrent": 1,
+      "display_name": "Codex",
+      "plane_token": "PLANE_CODEX_PAT",
+      "prompt_via": "stdin",
+      "command": ["codex", "exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "--ephemeral", "-"],
+      "parser": "codex_json",
+      "run_as": "dd-codex",
+      "group": "dd-codex",
+      "git_author": { "name": "Codex", "email": "codex@example.com" },
+      "timeout_seconds": 1800
+    }
+  },
+
+  "projects": {
+    "dynamic-dispatch": {
+      "plane_project_id": "PLANE_PROJECT_ID",
+      "plane_identifier": "YOUR_PLANE_IDENTIFIER",
+      "github_repo": "OWNER/REPO",
+      "repo_path": "/srv/dynamic-dispatch/repos/REPO",
+      "worktree_root": "/srv/dynamic-dispatch/worktrees",
+      "base_branch": "main",
+      "agents": ["claude-code", "codex"],
+      "branch_prefix": "dd",
+      "verify_command": ["python3", "-m", "unittest", "discover", "-s", "tests"],
+      "definition_of_done_path": "DEFINITION_OF_DONE.md",
+      "human_only_label_id": "PLANE_HUMAN_LABEL_ID",
+      "agent_label_id": "PLANE_AGENT_LABEL_ID",
+      "states": {
+        "in_progress": "PLANE_IN_PROGRESS_STATE_ID",
+        "in_review": "PLANE_IN_REVIEW_STATE_ID",
+        "blocked": "PLANE_BLOCKED_STATE_ID",
+        "done": "PLANE_DONE_STATE_ID"
+      },
+      "cycles": {
+        "product_backlog_state": "PLANE_PRODUCT_BACKLOG_STATE_ID",
+        "sprint_backlog_state": "PLANE_SPRINT_BACKLOG_STATE_ID",
+        "carried_over_label_id": "PLANE_CARRIED_OVER_LABEL_ID",
+        "max_stories": 10,
+        "replan_quiet_minutes": 15,
+        "blocked_reminder_minutes": 60
+      }
+    }
+  }
+}

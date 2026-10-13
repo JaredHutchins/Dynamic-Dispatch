@@ -1,0 +1,11 @@
+# Install independently of the checkout so broken DD code cannot break recovery.
+[Unit]
+Description=Recover DD after repeated startup failures
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/bin/dd-rollback
+# The helper drops to DD's user for all Git, state and alert operations.
+UMask=0077
+TimeoutStartSec=300

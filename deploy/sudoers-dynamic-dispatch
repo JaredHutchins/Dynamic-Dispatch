@@ -1,0 +1,9 @@
+# Lets DD's user run the agent launcher as an agent account - dd-agent
+# (Claude) or dd-codex (Codex) - and nothing else. The agent accounts themselves
+# get no sudo rights at all.
+#
+# DD_USER is the account running DD. Render and validate before installing;
+# see deploy/README.md for the commands.
+
+Defaults!/usr/local/bin/dd-agent-run !use_pty
+DD_USER ALL=(dd-agent, dd-codex) NOPASSWD: /usr/local/bin/dd-agent-run

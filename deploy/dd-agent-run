@@ -1,0 +1,125 @@
+#!/bin/bash
+# dd-agent-run - run one command as the restricted agent user.
+#
+# Installed root-owned at /usr/local/bin/dd-agent-run (mode 755) and invoked by
+# the orchestrator as:
+#   sudo -n -u dd-agent /usr/local/bin/dd-agent-run --cwd DIR --timeout SECS [--env-file FILE] -- CMD...
+#   sudo -n -u dd-agent /usr/local/bin/dd-agent-run --reap
+#
+# What it guarantees:
+#   - an empty environment, plus basics and the agent's own env file only
+#   - the working directory must be inside the worktree root
+#   - a group-writable umask, so the orchestrator can commit and clean up
+#   - the time limit is enforced here, as this user, because the orchestrator
+#     runs as a different user and cannot kill our processes
+#   - --reap kills every process dd-agent owns (except this one), so nothing
+#     an agent started in the background outlives its run, and fails unless
+#     /proc then shows none left alive. The orchestrator reaps before and
+#     after each sandboxed call. This assumes one run at a time: with
+#     concurrent runs it would kill the others too.
+
+set -euo pipefail
+
+# True if any process of ours other than this shell is still alive. A zombie
+# (dead, not yet collected) doesn't count, because it can't write anything -
+# unless it has more than one thread: a process whose main thread has exited
+# shows as a zombie while its other threads still run. Uses only bash
+# builtins, so it never counts a helper process of its own.
+#
+# The state comes from /proc/PID/status, not /proc/PID/stat: stat holds the
+# process name unescaped, and the agent picks that name, so it could fake a
+# state there. status escapes it. Anything that can't be read cleanly counts
+# as alive, except a process that has gone.
+others_alive() {
+    local dir key value state threads
+    for dir in /proc/[0-9]*; do
+        [[ "${dir#/proc/}" != "$$" && -O "$dir" ]] || continue
+        state=""
+        threads=""
+        {
+            while read -r key value _; do
+                case "$key" in
+                    State:)   state="$value" ;;
+                    Threads:) threads="$value" ;;
+                esac
+            done < "$dir/status"
+        } 2>/dev/null
+        [[ -n "$state" || -d "$dir" ]] || continue  # it just exited
+        [[ ( "$state" == Z || "$state" == X ) && "$threads" == 1 ]] || return 0
+    done
+    return 1
+}
+
+if [[ $# -eq 1 && "$1" == "--reap" ]]; then
+    [[ -r /proc/self/status ]] || { echo "dd-agent-run: --reap needs /proc" >&2; exit 1; }
+    # kill -1 signals every process this user may signal, except this shell.
+    # Its exit status says little (it fails when there was nothing to kill), so
+    # success is judged by looking afterwards. A process stuck in the kernel
+    # dies only when that call returns, so wait up to 10 seconds for it.
+    for _ in {1..20}; do
+        kill -KILL -1 2>/dev/null || true
+        others_alive || exit 0
+        sleep 0.5
+    done
+    echo "dd-agent-run: processes of $(id -un) still alive 10 seconds after being killed" >&2
+    exit 1
+fi
+
+WORKTREE_ROOT="/srv/dynamic-dispatch/worktrees"
+
+usage() {
+    echo "usage: dd-agent-run --cwd DIR --timeout SECONDS [--env-file FILE] -- COMMAND [ARGS...]" >&2
+    echo "       dd-agent-run --reap" >&2
+    exit 64
+}
+
+cwd=""
+limit=""
+env_file=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --cwd)      [[ $# -ge 2 ]] || usage; cwd="$2"; shift 2 ;;
+        --timeout)  [[ $# -ge 2 ]] || usage; limit="$2"; shift 2 ;;
+        --env-file) [[ $# -ge 2 ]] || usage; env_file="$2"; shift 2 ;;
+        --)         shift; break ;;
+        *)          usage ;;
+    esac
+done
+[[ -n "$cwd" && -n "$limit" && $# -gt 0 ]] || usage
+[[ "$limit" =~ ^[0-9]+$ ]] || usage
+
+real_cwd="$(realpath -e -- "$cwd")" || { echo "dd-agent-run: no such directory: $cwd" >&2; exit 65; }
+case "$real_cwd" in
+    "$WORKTREE_ROOT"/?*) ;;
+    *) echo "dd-agent-run: refusing to run outside $WORKTREE_ROOT: $real_cwd" >&2; exit 65 ;;
+esac
+
+me="$(id -un)"
+home="$(getent passwd "$me" | cut -d: -f6)"
+
+env_vars=(
+    "PATH=/usr/local/bin:/usr/bin:/bin"
+    "HOME=$home"
+    "USER=$me"
+    "LOGNAME=$me"
+    "LANG=C.UTF-8"
+    "TMPDIR=/tmp"
+    "GIT_OPTIONAL_LOCKS=0"
+    "GIT_TERMINAL_PROMPT=0"
+)
+
+# KEY=VALUE lines, no quotes. Read, never sourced.
+if [[ -n "$env_file" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ -z "$line" || "$line" == \#* ]] && continue
+        if [[ ! "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+            echo "dd-agent-run: ignoring a malformed line in $env_file" >&2
+            continue
+        fi
+        env_vars+=("$line")
+    done < "$env_file"
+fi
+
+umask 0002
+cd -- "$real_cwd"
+exec env -i "${env_vars[@]}" timeout --kill-after=30 "$limit" "$@"
