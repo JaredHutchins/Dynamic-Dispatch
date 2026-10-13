@@ -25,10 +25,10 @@ class AgentError(Exception):
     pass
 
 
-# Each parser returns ok, summary, usage, cost_usd, usage_limit_until (a UTC
-# datetime or None), and usage_limit, which is True when the account ran out
-# of usage. Recognising that is the parser's job, so nothing else depends on
-# how an agent words it.
+# Each parser takes the agent's stdout and stderr, and returns ok, summary,
+# usage, cost_usd, usage_limit_until (a UTC datetime or None), and usage_limit,
+# which is True when the account ran out of usage. Recognising that is the
+# parser's job, so nothing else depends on how an agent words it.
 
 # Claude Code's result text when a plan limit stops it, in the forms it has
 # used: "Claude AI usage limit reached|<time>", "5-hour limit reached ∙ resets
@@ -78,7 +78,7 @@ def _limit_until(message, clock_prefix, at=None):
     return None
 
 
-def parse_claude_json(stdout):
+def parse_claude_json(stdout, stderr=""):
     """Claude Code with --output-format json returns a single JSON object."""
     try:
         data = json.loads(stdout)
@@ -116,7 +116,7 @@ def _codex_error(event):
     return message if isinstance(message, str) and message else "(no message)"
 
 
-def parse_codex_json(stdout):
+def parse_codex_json(stdout, stderr=""):
     """`codex exec --json` prints one JSON event per line.
 
     A turn ends with turn.completed, which carries the token usage, or with
@@ -167,9 +167,98 @@ def parse_codex_json(stdout):
     return {"ok": True, "summary": summary, "usage": usage, "cost_usd": None, "usage_limit": False, "usage_limit_until": None}
 
 
+# Gemini CLI's quota wording is unconfirmed, so match it broadly: HTTP 429,
+# RESOURCE_EXHAUSTED, "Quota exceeded for quota metric ...", "You have
+# exhausted your capacity on this model". A Google Cloud "quota project" is a
+# login setting, not a limit.
+GEMINI_LIMIT = re.compile(r"\b429\b|resource.?exhausted|too many requests|rate.?limit"
+                          r"|\bquota\b(?!\s+project)|\bexhausted your\b", re.I)
+GEMINI_LOGIN = re.compile(r"\b401\b|unauthenticated|unauthori[sz]ed|invalid_grant|api key not valid"
+                          r"|invalid api key|(?:missing|invalid|expired|default|no) (?:\w+ )?credentials"
+                          r"|credentials.{0,40}(?:missing|invalid|expired|not found)|auth(?:entication)? method",
+                          re.I)
+
+
+def _gemini_object(text):
+    """The JSON object Gemini CLI printed, past any log lines before it.
+
+    It prints one indented object, so the object starts a line.
+    """
+    decoder = json.JSONDecoder()
+    for start in re.finditer(r"^\{", text, re.M):
+        try:
+            data, _ = decoder.raw_decode(text, start.start())
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict) and ("response" in data or data.get("error")):
+            return data
+    return None
+
+
+def _gemini_tokens(stats):
+    """stats.models.<model>.tokens, added up across the models the run used."""
+    models = stats.get("models") if isinstance(stats, dict) else None
+    usage = {}
+    for model in models.values() if isinstance(models, dict) else ():
+        tokens = model.get("tokens") if isinstance(model, dict) else None
+        for key, value in tokens.items() if isinstance(tokens, dict) else ():
+            if _is_number(value):
+                usage[key] = usage.get(key, 0) + value
+    return usage
+
+
+def _gemini_error(error):
+    """Gemini's error as one line: its message, then its type and code."""
+    if not isinstance(error, dict):
+        return str(error)
+    message = error.get("message")
+    message = message if isinstance(message, str) and message else "(no message)"
+    details = [str(error[key]) for key in ("type", "code") if error.get(key) not in (None, "")]
+    return f"{message} ({', '.join(details)})" if details else message
+
+
+def parse_gemini_json(stdout, stderr=""):
+    """`gemini --output-format json` prints a single JSON object.
+
+    A finished run has the summary in "response" and token counts per model
+    in "stats"; a failed one has "error" with a type, message and code, which
+    Gemini CLI writes to stderr. Gemini reports no cost.
+    """
+    data = _gemini_object(stdout) or _gemini_object(stderr)
+    if data is None:
+        raise AgentError(
+            "Could not read the output as gemini --output-format json: it has no "
+            f"response or error. It began:\n{(stdout or stderr)[:500] or '(no output)'}"
+        )
+    usage = _gemini_tokens(data.get("stats"))
+    if data.get("error"):
+        message = _gemini_error(data["error"])
+        limited = bool(GEMINI_LIMIT.search(message))
+        return {
+            "ok": False,
+            "summary": message,
+            "usage": usage,
+            "cost_usd": None,
+            "usage_limit": limited,
+            "usage_limit_until": _limit_until(message, r"\btry again at") if limited else None,
+        }
+    summary = data.get("response")
+    return {"ok": True, "summary": summary if isinstance(summary, str) else None, "usage": usage,
+            "cost_usd": None, "usage_limit": False, "usage_limit_until": None}
+
+
 PARSERS = {
     "claude_json": parse_claude_json,
     "codex_json": parse_codex_json,
+    "gemini_json": parse_gemini_json,
+}
+
+# How each agent words a rejected login, by parser. Only an agent's own error
+# messages are matched, never its transcript.
+LOGIN_PATTERNS = {
+    "claude_json": CLAUDE_LOGIN,
+    "codex_json": CODEX_LOGIN,
+    "gemini_json": GEMINI_LOGIN,
 }
 
 
@@ -218,7 +307,7 @@ def _hit_limit(parser, result):
     if result.timed_out or result.returncode is None or result.stdout_truncated:
         return False
     try:
-        return bool(parser(result.stdout).get("usage_limit"))
+        return bool(parser(result.stdout, result.stderr).get("usage_limit"))
     except AgentError:
         return False
 
@@ -242,9 +331,9 @@ def run(cfg, agent_cfg, prompt, worktree):
 
     login_key = 'agent:' + logins.fingerprint((agent_cfg.get('run_as'), agent_cfg.get('env_file'),
                                                agent_cfg.get('parser')))
-    pattern = CLAUDE_LOGIN if agent_cfg.get('parser') == 'claude_json' else CODEX_LOGIN
+    pattern = LOGIN_PATTERNS[agent_cfg['parser']]
     try:
-        parsed_login = parser(result.stdout)
+        parsed_login = parser(result.stdout, result.stderr)
     except AgentError:
         parsed_login = {}
     successful = result.returncode == 0 and not result.timed_out and parsed_login.get('ok', False)
@@ -262,7 +351,7 @@ def run(cfg, agent_cfg, prompt, worktree):
         failed = _failed(f"{agent_cfg['display_name']}: {proc.describe_failure(result, timeout)}",
                          usage_limit=_hit_limit(parser, result))
         try:
-            parsed = parser(result.stdout)
+            parsed = parser(result.stdout, result.stderr)
         except AgentError:
             pass
         else:
@@ -275,7 +364,7 @@ def run(cfg, agent_cfg, prompt, worktree):
         return _failed(f"{agent_cfg['display_name']} produced more output than the limit allows.")
 
     try:
-        parsed = parser(result.stdout)
+        parsed = parser(result.stdout, result.stderr)
     except AgentError as e:
         return _failed(f"{agent_cfg['display_name']}'s output could not be read. {e}")
 

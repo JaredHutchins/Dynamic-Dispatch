@@ -75,7 +75,7 @@ Tests are split by topic in `tests/test_*.py`, with shared fixtures and fake ser
 
 The working loop is board-driven dispatch, isolated worktree and story branch, sandboxed agent and verification, DD's commit/push/PR creation, and human review and merge. Failures surface on the story in Blocked.
 
-The initial Claude Code MVP (`--model opus`, following latest Opus) has expanded to Claude and Codex, concurrent accounts, same-branch rework, PR refreshes, status lights and optional notifications. AI peer review, richer rework context, multiple-project rollout, auto-merge, deployment and a QA gate remain deferred (§11).
+The initial Claude Code MVP (`--model opus`, following latest Opus) has expanded to Claude, Codex and Gemini CLI, concurrent accounts, same-branch rework, PR refreshes, status lights and optional notifications. AI peer review, richer rework context, multiple-project rollout, auto-merge, deployment and a QA gate remain deferred (§11).
 
 ## 8. Workflow and board
 
@@ -361,7 +361,7 @@ The complete JSON (title, body, group, level, url, and sound when set) is encryp
 
 ### Login health alerts
 
-DD sends active (sound-enabled) Bark alerts when Plane rejects an Orchestrator or agent login with HTTP 401/403, GitHub returns HTTP 401 (including App installation-token requests), Git push reports an authentication failure, or Claude/Codex report a failed login. Detection uses Codex error and turn.failed messages, or Claude error result text and stderr, so transcript and tool output cannot trigger a login alert. Messages identify the login and observation point without copying error output or credentials. System alerts need no Plane lookup. Existing story failure and Blocked handling is unchanged.
+DD sends active (sound-enabled) Bark alerts when Plane rejects an Orchestrator or agent login with HTTP 401/403, GitHub returns HTTP 401 (including App installation-token requests), Git push reports an authentication failure, or an agent reports a failed login. Detection uses Codex error and turn.failed messages, Gemini's JSON error (message, type and code), or Claude error result text and stderr, so transcript and tool output cannot trigger a login alert. Each parser has its own login wording in `LOGIN_PATTERNS`; no agent's wording stands in for another's. Messages identify the login and observation point without copying error output or credentials. System alerts need no Plane lookup. Existing story failure and Blocked handling is unchanged.
 
 A SQLite `login_alerts` table, owned by the runs store, remembers failures across restarts. The observer loads its keys at startup and writes only state changes; routine successful calls skip both the database and the observer lock. A successful call using the same login rearms its alert. Plane and GitHub API credentials use hashed identities; App token acquisition and installation API calls use separate identities derived from the App configuration; agent identities use their account, environment-file path and parser. Git push uses one host-login identity, matching the shared saved GitHub credential. Agent wording patterns live beside the usage-limit patterns in `dispatch/agents.py`.
 
@@ -393,8 +393,9 @@ A background monitor checks `github.token` with `GET /rate_limit` once per UTC d
 | DD (Orchestrator on Plane) | DD's account (the approver's own in the example setup, §15) | `config.json` (every Plane and GitHub token), the GitHub App's private key, git credential store | System events: blocked, failures | — |
 | Claude (agent) | dd-agent | Its model credential only | None directly. Work events are written on its behalf with its Plane token | `Claude <claude@example.com>` |
 | Codex (agent) | dd-codex | Its model credential only | None directly. Work events are written on its behalf with its Plane token | `Codex <codex@example.com>` |
+| Gemini (agent, optional) | dd-gemini | Its model credential only | None directly. Work events are written on its behalf with its Plane token | `Gemini <gemini@example.com>` |
 
-Every agent has its own Unix account (`run_as` in its config entry), its own Plane account and its own git author. Its model login is either an env file named in its config entry (Claude: `/etc/dynamic-dispatch/claude.env`) or, with no `env_file`, whatever the agent keeps in its own home (Codex: `/home/dd-codex/.codex/auth.json`, readable only by `dd-codex`). Everything that identifies the agent comes from its config entry, so a third agent is a new config entry (and a parser, if its output format is new) plus an account, its login and a line in the sudoers rule. Commits, the pull request's "Agent:" line and the Plane comment on success all use the building agent's identity, so there is no ambiguity about what wrote what.
+Every agent has its own Unix account (`run_as` in its config entry), its own Plane account and its own git author. Its model login is either an env file named in its config entry (Claude: `/etc/dynamic-dispatch/claude.env`; Gemini: `/etc/dynamic-dispatch/gemini.env`, its Vertex AI settings and the path of a key file in its own home) or, with no `env_file`, whatever the agent keeps in its own home (Codex: `/home/dd-codex/.codex/auth.json`, readable only by `dd-codex`). Everything that identifies the agent comes from its config entry, so a third agent is a new config entry (and a parser, if its output format is new) plus an account, its login and a line in the sudoers rule. Commits, the pull request's "Agent:" line and the Plane comment on success all use the building agent's identity, so there is no ambiguity about what wrote what.
 
 ### How it is enforced
 
@@ -417,7 +418,7 @@ Every agent has its own Unix account (`run_as` in its config entry), its own Pla
 ### What is still exposed, knowingly
 
 - The agent's own model credential. It needs it to work.
-- Codex's login, in its output. DD can't read `/home/dd-codex/.codex/auth.json`, and shouldn't, so it can't scrub that credential from what Codex prints. Redaction covers only credentials in `config.json` and env files.
+- Codex's login, in its output. DD can't read `/home/dd-codex/.codex/auth.json`, and shouldn't, so it can't scrub that credential from what Codex prints. The same holds for Gemini's Vertex AI key file in `/home/dd-gemini`. Redaction covers only credentials in `config.json` and env files.
 - Anything world-readable on the Pi. A separate account is not a container.
 - The repository it is working on. Never commit a credential to a repo an agent works in.
 - The shared `ddwork` group permits access to the worktree area, but grants no access inside another agent’s story folder.

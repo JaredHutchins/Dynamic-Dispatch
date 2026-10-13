@@ -1,0 +1,9 @@
+YOLO mode is enabled. All tool calls will be automatically approved.
+{
+  "session_id": "5d2e7a10-8c3b-4f6e-a1d9-7b0c2e4f6a8d",
+  "error": {
+    "type": "Error",
+    "message": "[API Error: Publisher Model `projects/example-project/locations/us-central1/publishers/google/models/gemini-3-pro-preview` was not found or your project does not have access to it.]",
+    "code": 404
+  }
+}

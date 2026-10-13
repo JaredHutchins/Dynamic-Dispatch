@@ -1,6 +1,7 @@
-"""Stands in for Claude Code, or for Codex if a third argument says "codex".
+"""Stands in for Claude Code, or for Codex or Gemini CLI if a third argument says "codex" or "gemini".
 
-Behaviour chosen by the mode argument. Codex's output follows `codex exec --json`.
+Behaviour chosen by the mode argument. Codex's output follows `codex exec --json`;
+Gemini's replays the sample outputs in samples/gemini.
 """
 import json, os, sys, time
 from pathlib import Path
@@ -87,6 +88,21 @@ if style == "codex":
     event(type="item.completed", item={"id": "item_2", "type": "agent_message", "text": result})
     event(type="turn.completed", usage={"input_tokens": 24763, "cached_input_tokens": 24448, "output_tokens": 122})
     sys.exit(3 if mode == "fail_usage" else 0)
+
+if style == "gemini":
+    samples = Path(__file__).parent / "samples" / "gemini"
+    failures = {"limit": ("quota", 1), "error": ("error", 1), "login": ("login", 1), "config": ("config", 52)}
+    if mode in failures:
+        name, code = failures[mode]
+        # The sample's project ID stands where a configured secret could appear.
+        print((samples / f"{name}.stderr.txt").read_text().replace("example-project", secret or "example-project"),
+              file=sys.stderr, end="")
+        sys.exit(code)
+    print((samples / "success.stderr.txt").read_text(), file=sys.stderr, end="")
+    output = json.loads((samples / "success.stdout.json").read_text())
+    output["response"] = result
+    print(json.dumps(output, indent=2))
+    sys.exit(0)
 
 if mode in ("limit", "limit_partial", "limit_mixed", "limit_reset"):
     print(json.dumps({"type": "result", "subtype": "success", "is_error": True,
