@@ -35,7 +35,7 @@ def build_prompt(project_cfg, issue):
         changed and why, including anything you were unsure about.
 
         Run every command in the foreground and wait for it to finish.
-        Do not start background jobs, monitors or waiters: DD stops every
+        Do not start background jobs, monitors or waiters: the system running you stops every
         process you started when your run ends, and you are never woken again.
         Your final message becomes the pull request description. Write it only
         after all work and checks have finished; it must be the complete
