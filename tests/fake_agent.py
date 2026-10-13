@@ -98,6 +98,12 @@ if style == "gemini":
         print((samples / f"{name}.stderr.txt").read_text().replace("example-project", secret or "example-project"),
               file=sys.stderr, end="")
         sys.exit(code)
+    if mode == "error_stdout":
+        # The error JSON on stdout, with unrelated diagnostics on stderr.
+        print("Warning: unrelated diagnostic from a tool", file=sys.stderr)
+        print((samples / "error.stderr.txt").read_text().replace("example-project", secret or "example-project"),
+              end="")
+        sys.exit(1)
     print((samples / "success.stderr.txt").read_text(), file=sys.stderr, end="")
     output = json.loads((samples / "success.stdout.json").read_text())
     output["response"] = result

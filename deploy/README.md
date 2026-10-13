@@ -525,6 +525,11 @@ it as in "Install (once)":
 
     sed -i 's/(dd-agent, dd-codex)/(dd-agent, dd-codex, dd-gemini)/' "$DD_DEPLOY_TMP/sudoers-dynamic-dispatch"
 
+The template itself still names only `dd-agent` and `dd-codex`, so repeat
+this step every time you render and install the sudoers rule again, for
+example after an update changes the template. Otherwise the reinstalled rule
+drops `dd-gemini` and DD can no longer start Gemini.
+
 Gemini's settings live in `/etc/dynamic-dispatch/gemini.env`, owned by
 `root:dd-gemini` with mode 640, in the same `KEY=VALUE` form as `claude.env`:
 
@@ -542,8 +547,11 @@ The file holds these lines, with your Google Cloud project's ID in place of
 Keep `GOOGLE_CLOUD_LOCATION` at `global`: `us-central1` answers 404 for
 current models. The project needs the Vertex AI API turned on.
 `GOOGLE_APPLICATION_CREDENTIALS` names a key for a service account with the
-Vertex AI User role. Copy the key there owned by `dd-gemini` with mode 600:
+Vertex AI User role. Create `/home/dd-gemini/.config` owned by `dd-gemini`
+with mode 700, so only that account can reach it, then copy the key there
+owned by `dd-gemini` with mode 600:
 
+    sudo install -d -o dd-gemini -g dd-gemini -m 700 /home/dd-gemini/.config
     sudo install -o dd-gemini -g dd-gemini -m 600 vertex-key.json /home/dd-gemini/.config/gemini-vertex-key.json
 
 DD scrubs the env file's values from what it stores and posts, but it can't

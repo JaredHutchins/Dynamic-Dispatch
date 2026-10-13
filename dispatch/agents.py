@@ -299,6 +299,19 @@ def _failed(error, usage_limit=False):
             "usage_limit": usage_limit, "usage_limit_until": None, "error": error}
 
 
+def _describe_failure(agent_cfg, result, timeout, parsed):
+    """Why a run failed, for the story.
+
+    Gemini CLI's own error is reported whichever stream held its JSON, since
+    the other stream can carry unrelated log lines that would hide it.
+    """
+    error = parsed.get("summary") if parsed.get("ok") is False else None
+    if (agent_cfg.get("parser") != "gemini_json" or not isinstance(error, str) or not error
+            or result.timed_out or result.returncode in (None, *proc.TIMEOUT_EXIT_CODES)):
+        return proc.describe_failure(result, timeout)
+    return f"Exited with code {result.returncode}.\n\n{error[-4000:]}"
+
+
 def _hit_limit(parser, result):
     """Whether a failed run stopped at its usage limit.
 
@@ -348,7 +361,8 @@ def run(cfg, agent_cfg, prompt, worktree):
         logins.login(login_key, agent_cfg['display_name'] + ' login', 'agent output', False)
 
     if result.timed_out or result.returncode != 0:
-        failed = _failed(f"{agent_cfg['display_name']}: {proc.describe_failure(result, timeout)}",
+        reason = _describe_failure(agent_cfg, result, timeout, parsed_login)
+        failed = _failed(f"{agent_cfg['display_name']}: {reason}",
                          usage_limit=_hit_limit(parser, result))
         try:
             parsed = parser(result.stdout, result.stderr)

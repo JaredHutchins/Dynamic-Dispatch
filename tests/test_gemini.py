@@ -137,6 +137,13 @@ class Logins(unittest.TestCase):
         self.run_agent(0, stdout=json.dumps({'response': '401 UNAUTHENTICATED invalid credentials'}))
         self.send.assert_not_called()
 
+    def test_failure_reports_geminis_error_from_either_stream(self):
+        error = json.dumps({'error': {'type': 'Error', 'message': 'Model not found', 'code': 404}})
+        for stdout, stderr in ((error, 'unrelated diagnostic'), ('', error)):
+            with self.subTest(stdout=stdout):
+                failed = self.run_agent(1, stdout, stderr)
+                self.assertEqual(failed['error'], 'Gemini: Exited with code 1.\n\nModel not found (Error, 404)')
+
     def test_success_rearms_the_alert(self):
         for code, stdout, stderr in ((1, '', sample('login.stderr.txt')), (0, sample('success.stdout.json'), ''),
                                      (1, '', sample('login.stderr.txt'))):
@@ -182,6 +189,17 @@ class Workflow(Base):
         self.assertNotIn(MODEL, comment)
         self.assertNotIn(MODEL, json.dumps([dict(e) for e in runs.events(self.conn)]))
         self.assertEqual(runs.cooldowns(self.conn, runs.now()), {})
+
+    def test_error_on_stdout_is_reported_over_unrelated_stderr(self):
+        os.environ["LEAK"] = MODEL
+        self.set_mode("error_stdout"); self.add_issue(); self.cycle()
+        self.assertEqual(board.issues["i1"]["state"], {"id": S_BLK})
+        comment = board.comments[0][2]
+        self.assertIn("Exited with code 1", comment)
+        self.assertIn("was not found or your project does not have access to it", comment)
+        self.assertIn("(Error, 404)", comment)
+        self.assertNotIn("unrelated diagnostic", comment)
+        self.assertNotIn(MODEL, comment)
 
     def test_config_refusal_blocks(self):
         self.set_mode("config"); self.add_issue(); self.cycle()
