@@ -76,11 +76,47 @@ failure it stops, lists completed work and the failed step, and the same
 command inspects current state and continues. A failed step may be partially
 complete. No rollback deletes previously completed work.
 
-Setup does **not** edit `config.json`, secrets or agent logins, enable or start
-DD, create projects, or contact Plane or GitHub. Complete the configuration
-and login steps below, then explicitly enable/start the service when ready.
-Log out and back in before running DD manually so new group memberships apply.
-The manual commands below remain a reference for individual steps.
+The installer does **not** edit `config.json`, secrets or agent logins, enable
+or start DD, create projects, or contact Plane or GitHub. Log out and back in
+afterwards so the new group memberships apply. Then run the guided setup.
+
+## Guided setup
+
+Run this as DD's account from the checkout, without sudo:
+
+    python3 main.py --setup
+
+Have these ready first; setup tells you where to make them but makes none:
+
+- The Plane address and workspace slug, and an API token for the
+  Orchestrator and for each agent's Plane account, made in Plane's settings
+  while signed in as that account. Plane Cloud isn't supported.
+- A GitHub App for DD with contents read, pull requests write and commit
+  statuses write, installed on your repositories, and its private key saved
+  on this machine with `chmod 600`. A fine-grained token works instead, but
+  `--add-project` needs the App.
+- The approver's GitHub username, and their Plane user ID if you will use
+  sprint-pull.
+
+Setup asks which agents the installer set up (`claude`, `codex`, `gemini`)
+and checks each answer as it is given: the Plane address and each token sign
+in and reach the workspace, each agent has its own Plane account, the App
+signs in (or the token works) and the approver's GitHub account exists. A
+failed check says what to fix, never the secret, and asks again. Secrets are
+typed hidden and are written only to `config.json`, with mode 600.
+
+Run it again to change something: Enter keeps each current value. A changed
+`config.json` is first backed up beside it as `config.json.backup-*`, with
+mode 600, as `--add-project` does; the same answers change nothing. Agents
+already configured are kept, and other settings in the file are left alone.
+
+It then offers to add the first project with `--add-project`, runs the
+doctor, and prints the command that starts DD. Finish the "Agent logins" and
+fix any doctor failures before running it:
+
+    sudo systemctl enable --now dynamic-dispatch
+
+The sections marked "manual reference" below cover the same steps by hand.
 
 ## Choose the account and checkout (manual reference)
 
@@ -113,8 +149,9 @@ unquoted (including spaces) and escapes systemd's percent specifiers:
     (target / 'sudoers-dynamic-dispatch').write_text(sudoers.replace('DD_USER', user))
     RENDER
 
-## Set up config.json (once)
+## Set up config.json (manual reference)
 
+`python3 main.py --setup` (see "Guided setup") writes this file for you.
 DD reads its settings from `$DD_CHECKOUT/config.json`, which is never
 committed. Start from the example and make it readable only by you, as DD
 refuses to start otherwise:
@@ -212,7 +249,7 @@ group of the folder it is placed in (`ddwork` for `repos/`) and nothing in it is
 group-writable, matching "Paths on the Pi" in `ARCHITECTURE.md`.
 
 Before replacing config, setup validates a private candidate and saves the exact
-original as `config.json.backup-*` beside it with the same private permissions.
+original as `config.json.backup-*` beside it with mode 600.
 Keep those backups private. Run only one setup command at a time. If a step fails,
 run the same command with the same answers: it detects completed Plane resources
 and clones, and leaves config untouched if the project is already saved. Approve
