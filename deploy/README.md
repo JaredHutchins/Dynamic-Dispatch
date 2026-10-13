@@ -502,6 +502,101 @@ another device, where you sign in with ChatGPT:
 
     cd /tmp && sudo -u dd-codex -H codex login --device-auth
 
+### Adding Gemini CLI
+
+Gemini CLI can build stories too. DD reads its JSON output, in the format
+Gemini CLI 0.59.0 prints. Like the other agents it needs its own account and
+group, its own Plane account, and a login only it and DD can read. Here the
+login is Vertex AI on Google Cloud.
+
+Create the account and group, let DD's account into the group, and let the
+new account reach the worktree area:
+
+    sudo useradd --create-home --user-group dd-gemini
+    sudo usermod -aG dd-gemini "$DD_USER"
+    sudo usermod -aG ddwork dd-gemini
+
+Install Gemini CLI so `gemini` is in `/usr/local/bin` or `/usr/bin`, where the
+launcher looks, for example with `sudo npm install -g @google/gemini-cli`.
+
+The sudoers template names only `dd-agent` and `dd-codex`. After rendering
+it as above, add `dd-gemini` to the rendered copy, then validate and install
+it as in "Install (once)":
+
+    sed -i 's/(dd-agent, dd-codex)/(dd-agent, dd-codex, dd-gemini)/' "$DD_DEPLOY_TMP/sudoers-dynamic-dispatch"
+
+The template itself still names only `dd-agent` and `dd-codex`, so repeat
+this step every time you render and install the sudoers rule again, for
+example after an update changes the template. Otherwise the reinstalled rule
+drops `dd-gemini` and DD can no longer start Gemini.
+
+Gemini's settings live in `/etc/dynamic-dispatch/gemini.env`, owned by
+`root:dd-gemini` with mode 640, in the same `KEY=VALUE` form as `claude.env`:
+
+    sudo install -o root -g dd-gemini -m 640 /dev/null /etc/dynamic-dispatch/gemini.env
+    sudo nano /etc/dynamic-dispatch/gemini.env
+
+The file holds these lines, with your Google Cloud project's ID in place of
+`YOUR_GCP_PROJECT_ID`:
+
+    GOOGLE_GENAI_USE_VERTEXAI=true
+    GOOGLE_CLOUD_PROJECT=YOUR_GCP_PROJECT_ID
+    GOOGLE_CLOUD_LOCATION=global
+    GOOGLE_APPLICATION_CREDENTIALS=/home/dd-gemini/.config/gemini-vertex-key.json
+
+Keep `GOOGLE_CLOUD_LOCATION` at `global`: `us-central1` answers 404 for
+current models. The project needs the Vertex AI API turned on.
+`GOOGLE_APPLICATION_CREDENTIALS` names a key for a service account with the
+Vertex AI User role. Create `/home/dd-gemini/.config` owned by `dd-gemini`
+with mode 700, so only that account can reach it, then copy the key there
+owned by `dd-gemini` with mode 600:
+
+    sudo install -d -o dd-gemini -g dd-gemini -m 700 /home/dd-gemini/.config
+    sudo install -o dd-gemini -g dd-gemini -m 600 vertex-key.json /home/dd-gemini/.config/gemini-vertex-key.json
+
+DD scrubs the env file's values from what it stores and posts, but it can't
+read the key file, as with Codex's login.
+
+Then add the agent to `agents` in `config.json`, with the Gemini Plane
+account's token in place of `PLANE_GEMINI_PAT`, and add `gemini` to each
+project's `agents` list:
+
+```json
+"gemini": {
+  "max_concurrent": 1,
+  "display_name": "Gemini",
+  "plane_token": "PLANE_GEMINI_PAT",
+  "prompt_via": "stdin",
+  "command": ["gemini", "--yolo", "--output-format", "json", "-m", "gemini-2.5-pro"],
+  "parser": "gemini_json",
+  "run_as": "dd-gemini",
+  "group": "dd-gemini",
+  "env_file": "/etc/dynamic-dispatch/gemini.env",
+  "git_author": {"name": "Gemini", "email": "gemini@example.com"},
+  "timeout_seconds": 1800
+}
+```
+
+`--yolo` approves every tool call without asking, as the other agents' flags
+do; the account is what contains it. `-m` pins the model so a new default
+can't change what builds stories; use a model your project can reach in the
+`global` location. With `prompt_via` set to `stdin`, Gemini CLI reads the
+story from its input and runs headless, which keeps long prompts off the
+command line. If your version doesn't, put `"-p", "{prompt}"` at the end of
+the command instead and remove `prompt_via`.
+
+This checks the login as `dd-gemini`, using the same settings:
+
+    cd /tmp && echo "Reply with OK" | sudo -u dd-gemini -H bash -c 'set -a; . /etc/dynamic-dispatch/gemini.env; exec gemini --output-format json -m gemini-2.5-pro'
+
+A working login prints a JSON object with `"response"`. A failure prints
+`"error"` with a type, message and code instead; exit code 1 is an API or
+model error and 52 means Gemini refused its settings. When DD runs Gemini, a
+rejected login (for example 401, UNAUTHENTICATED, or missing or invalid
+credentials) sends a login alert, and running out of quota (for example 429
+or RESOURCE_EXHAUSTED) cools Gemini down like any other usage limit. Gemini
+gives no reset time, so the cool-down lasts `usage_limit_cooldown_minutes`.
+
 ## Tokens and when they expire
 
 - The fine-grained GitHub token named "dynamic-dispatch-pi4" was regenerated
@@ -655,7 +750,7 @@ settings produce one startup warning and disable alerts.
 
 The same optional Bark settings also enable sound alerts for rejected Plane
 logins (Orchestrator or agent), GitHub API/App logins, Git push authentication,
-and Claude/Codex logins. Alerts name the login and where DD noticed the failure,
+and Claude, Codex and Gemini logins. Alerts name the login and where DD noticed the failure,
 without copying credentials or error output. They work even when Plane is
 unavailable. Each login alerts once until it succeeds and fails again; this
 state survives DD restarts. Git push uses the shared host login described above.

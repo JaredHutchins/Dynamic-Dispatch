@@ -1,0 +1,8 @@
+{
+  "session_id": "6b7c8d9e-0f1a-4b2c-9d3e-4f5a6b7c8d9e",
+  "error": {
+    "type": "FatalConfigError",
+    "message": "Could not load the default credentials. Browse to https://cloud.google.com/docs/authentication/getting-started for more information.",
+    "code": 52
+  }
+}
