@@ -26,6 +26,10 @@ class Installer(unittest.TestCase):
                       'dd': SimpleNamespace(pw_uid=1000, pw_gid=1000)}
         self.groups = {'root': SimpleNamespace(gr_gid=0, gr_mem=[])}
         self.files = {}
+        self.system_directories = {
+            Path('/usr/local/bin'): SimpleNamespace(st_uid=0, st_gid=0, st_mode=0o755),
+            Path('/etc/sudoers.d'): SimpleNamespace(st_uid=0, st_gid=0, st_mode=0o750),
+        }
         self.commands = []
         self.stack = contextlib.ExitStack()
         self.addCleanup(self.stack.close)
@@ -39,7 +43,7 @@ class Installer(unittest.TestCase):
         self.output = self.stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
 
     def inspect(self, path, directory=False):
-        return self.files.get(path, (None, None))[0]
+        return self.files.get(path, (self.system_directories.get(path), None))[0]
 
     def read_bytes(self, path):
         if path in self.files:
@@ -102,6 +106,51 @@ class Installer(unittest.TestCase):
         self.assertIn(b'ALL=(dd-gemini)', self.files[Path('/etc/sudoers.d/dynamic-dispatch')][1])
         self.assertNotIn('dd-agent', self.users)
         self.assertEqual(self.plan(container=True, agents=('gemini',)).steps, [])
+
+    def test_system_directories_preserved(self):
+        for mode in (0o700, 0o750, 0o755):
+            with self.subTest(mode=oct(mode)):
+                for info in self.system_directories.values():
+                    info.st_mode = mode
+                self.assertEqual(self.plan(container=True).apply(), 0)
+                for path, info in self.system_directories.items():
+                    self.assertNotIn(path, self.files)
+                    self.assertEqual(info.st_mode, mode)
+                self.assertEqual(self.plan(container=True).steps, [])
+
+    def test_unsafe_system_directories_refused_before_changes(self):
+        for path, info in self.system_directories.items():
+            for uid, mode in ((1000, 0o755), (0, 0o775), (0, 0o757)):
+                with self.subTest(path=path, uid=uid, mode=oct(mode)):
+                    info.st_uid, info.st_mode = uid, mode
+                    with self.assertRaisesRegex(ValueError, f'System directory {path}.*root'):
+                        self.plan(container=True)
+                    self.assertFalse(self.files)
+                    self.assertFalse(self.commands)
+            info.st_uid, info.st_mode = 0, 0o750
+
+    def test_missing_system_directories(self):
+        del self.system_directories[Path('/usr/local/bin')]
+        with self.assertRaisesRegex(ValueError, 'Required system directory missing: /usr/local/bin'):
+            self.plan(container=True)
+        self.assertFalse(self.files)
+        self.assertFalse(self.commands)
+        self.system_directories[Path('/usr/local/bin')] = SimpleNamespace(
+            st_uid=0, st_gid=0, st_mode=0o755)
+        del self.system_directories[Path('/etc/sudoers.d')]
+        plan = self.plan(container=True)
+        self.assertFalse(self.files)
+        self.assertEqual(plan.apply(), 0)
+        info, _ = self.files[Path('/etc/sudoers.d')]
+        self.assertEqual((info.st_uid, info.st_gid, info.st_mode), (0, 0, 0o750))
+        self.assertEqual(self.plan(container=True).steps, [])
+
+    def test_missing_sudoers_agent_list_refused_before_changes(self):
+        with mock.patch.object(Path, 'read_text', return_value='DD_USER ALL=(root) ALL\n'):
+            with self.assertRaisesRegex(ValueError, 'Sudoers template.*expected agent list'):
+                self.plan(container=True, agents=('gemini',))
+        self.assertFalse(self.files)
+        self.assertFalse(self.commands)
 
     def test_stop_on_failure_and_resume(self):
         plan = self.plan(container=True)

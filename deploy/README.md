@@ -53,7 +53,12 @@ existing logins are never edited. It manages these directories non-recursively:
 | `/srv/dynamic-dispatch/repos` | DD's account:ddwork | 2750 |
 | `/srv/dynamic-dispatch/worktrees` | DD's account:ddwork | 2750 |
 | `/etc/dynamic-dispatch` | root:ddwork | 750 |
-| `/usr/local/bin` and `/etc/sudoers.d` | root:root | 755 |
+| `/etc/sudoers.d` (only if missing) | root:root | 750 |
+
+Existing `/usr/local/bin` and `/etc/sudoers.d` belong to the operating system:
+the installer checks that they are directories owned by root and not writable
+by group or others, and never changes their ownership or modes. An unsafe
+directory or missing `/usr/local/bin` stops setup before any changes.
 
 The root-owned launcher and rollback helper use mode 755, the sudoers rule
 uses 440, and the rendered service and rollback unit use 644. The sudo rule

@@ -123,6 +123,19 @@ class Plan:
             self.add(f'Add {name} to {group_name}', command,
                      ['usermod', '--append', '--groups', group_name, name])
 
+    def system_directory(self, path, create=False):
+        path = Path(path)
+        info = inspect_path(path, directory=True)
+        if info is None:
+            if create:
+                self.path(path, 'root', 'root', 0o750)
+                return
+            raise ValueError(f'Required system directory missing: {path}')
+        if info.st_uid != 0 or info.st_mode & 0o022:
+            raise ValueError(f'System directory {path} must be owned by root and not '
+                             'writable by group or others; correct it manually')
+        self.skipped.append(str(path))
+
     def show(self):
         for description in self.skipped:
             print(f'SKIP: {description} (already set up)')
@@ -149,6 +162,8 @@ class Plan:
 
 def build_plan(dd_user, checkout, agents, container):
     plan = Plan()
+    plan.system_directory('/usr/local/bin')
+    plan.system_directory('/etc/sudoers.d', create=True)
     accounts = [AGENTS[agent] for agent in agents]
     seen_uids = {0, user(dd_user).pw_uid}
     for name in ['ddwork', *accounts]:
@@ -180,8 +195,6 @@ def build_plan(dd_user, checkout, agents, container):
         ('/srv/dynamic-dispatch/repos', dd_user, 'ddwork', 0o2750),
         ('/srv/dynamic-dispatch/worktrees', dd_user, 'ddwork', 0o2750),
         ('/etc/dynamic-dispatch', 'root', 'ddwork', 0o750),
-        ('/usr/local/bin', 'root', 'root', 0o755),
-        ('/etc/sudoers.d', 'root', 'root', 0o755),
     ]:
         plan.path(path, owner, group_name, mode)
     source = checkout / 'deploy'
@@ -189,6 +202,8 @@ def build_plan(dd_user, checkout, agents, container):
         plan.path('/usr/local/bin/' + name, 'root', 'root', 0o755,
                   (source / name).read_bytes())
     sudoers = (source / 'sudoers-dynamic-dispatch').read_text().replace('DD_USER', dd_user)
+    if '(dd-agent, dd-codex)' not in sudoers:
+        raise ValueError('Sudoers template is missing expected agent list (dd-agent, dd-codex)')
     sudoers = sudoers.replace('(dd-agent, dd-codex)', '(' + ', '.join(accounts) + ')')
     plan.path('/etc/sudoers.d/dynamic-dispatch', 'root', 'root', 0o440, sudoers.encode())
     if not container:
