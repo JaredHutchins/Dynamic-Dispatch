@@ -1,12 +1,17 @@
 # Dynamic Dispatch
 
-Dynamic Dispatch (DD) takes stories from a Plane board and
-has AI coding agents, such as Claude Code and Codex, build them as pull
-requests. A human reviews every pull request and merges it; DD never merges
-anything itself.
+Dynamic Dispatch (DD) is an AI agent orchestration system for software work.
+It takes stories from a Plane board, has AI coding agents such as Claude Code
+and Codex build them as pull requests, and keeps those pull requests tested
+and up to date. A human reviews every pull request and merges it; DD never
+merges anything itself.
 
 The aim is that a story posted in the morning becomes a reviewable, tested
 pull request by the evening, without anyone watching over it.
+
+**Status: early release (v0.1).** DD builds its own stories every day on its
+author's setup, but setup is manual and that is the only setup tested so far.
+See [What you need](#what-you-need).
 
 ## Who it is for
 
@@ -17,6 +22,29 @@ own Plane board, GitHub repository and agent logins.
 
 It is a good fit if you are comfortable reading every pull request before you
 merge it. It is not a hosted service, and it does not replace code review.
+
+## What you need
+
+- **A Linux machine** with systemd and sudo. DD's sandbox runs each agent as
+  its own Linux account. A Raspberry Pi 4 is enough.
+- **Python 3.11 or newer.** DD uses only the standard library, plus
+  `cryptography` if you turn on phone alerts.
+- **Self-hosted Plane Community Edition.** Tested with 1.4.2. Plane Cloud
+  isn't supported yet.
+- **A GitHub repository,** a GitHub App for DD (it opens pull requests and
+  sets the status light), and a Git login on the machine that can push to the
+  repository.
+- **At least one agent:** Claude Code or Codex, installed and logged in.
+- **Optional:** a self-hosted [Bark server](https://github.com/Finb/bark-server)
+  and the [Bark app](https://github.com/Finb/Bark) (iPhone and iPad) for
+  encrypted phone alerts.
+
+### Agent logins
+
+DD has been tested with Claude Code and Codex signed in with personal
+subscription plans. Each plan has its own terms on automated use, so check
+yours before running DD unattended. API keys haven't been tested with DD yet;
+support for them is planned.
 
 ## How it works
 
@@ -48,10 +76,10 @@ Cycle:
 
 1. Add stories to a Cycle. DD moves them into Sprint Backlog and creates a
    plan item for the Cycle.
-2. Reply `@Orchestrator assess` on the plan item. Each agent sizes the stories
-   independently, and DD merges their answers into one plan: a build order,
-   dependencies, where the agents disagree, and a rough estimate of whether
-   the Cycle fits its dates.
+2. Reply `@Orchestrator assess` on the plan item (Orchestrator is DD's Plane
+   account). Each agent sizes the stories independently, and DD merges their
+   answers into one plan: a build order, dependencies, where the agents
+   disagree, and a rough estimate of whether the Cycle fits its dates.
 3. Reply `@Orchestrator approve`, or `@Orchestrator reject:` with your
    reasons to get a new plan.
 4. Once the Cycle starts, DD starts its stories in the approved order, as
@@ -80,9 +108,14 @@ Sprint-pull is off unless you turn it on for a project.
 - **Self-update with rollback.** DD can update itself after a change to its
   own code is merged and main passes. If the new version won't run, it rolls
   back to the last version that did and tells you.
+- **Phone alerts (optional).** Alerts through your own Bark server when a pull
+  request is ready for review, a story is blocked, or a login is rejected. DD
+  encrypts each alert before sending it, so neither the Bark server nor
+  Apple's push service can read it.
 - **The doctor command.** `python3 main.py --doctor` checks the setup without
-  changing it: config, Plane and GitHub access, agent accounts and logins, the
-  services, and that the sandbox walls hold.
+  changing it: config, Plane and GitHub access, agent accounts, the services,
+  and that the sandbox walls hold. It can't check agent logins without running
+  an agent; DD alerts you when a login is rejected.
 
 ## Read more
 
