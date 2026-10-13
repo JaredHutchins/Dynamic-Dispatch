@@ -104,13 +104,13 @@ def with_main(ctx, issue, title, result):
                 runs.record_repair(ctx.conn, ctx.run["id"])
                 ctx.event("sent_back", message)
                 prompt = prompts.build_prompt(ctx.project_cfg, issue) + (
-                    f"\nDD has merged the latest main into your earlier saved work.\n"
+                    f"\nThe system running you has merged the latest main into your earlier saved work.\n"
                     f"Pull requests merged meanwhile: {meanwhile}\n"
                     f"{details}\n"
                     "Resolve clashes and fix your own change so both changes keep their intended "
                     "behaviour. Preserve your earlier story work and the changes from main. "
                     "Remove all conflict markers. Do not run Git commands that change history: "
-                    "do not merge, rebase, reset, commit or push. DD handles Git."
+                    "do not merge, rebase, reset, commit or push. The system running you handles Git."
                 )
                 ctx.event("agent_started", f"Repair started: {ctx.agent_cfg['display_name']}")
                 repaired = True
