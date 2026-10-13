@@ -1,0 +1,277 @@
+#!/usr/bin/python3
+"""Plan and install DD's Linux host setup, independently of dispatch imports."""
+
+import sys
+
+if sys.version_info < (3, 11):
+    sys.exit('dd-install: Python 3.11 or newer is required')
+if sys.platform != 'linux':
+    sys.exit('dd-install: Linux is required')
+
+import argparse
+import grp
+import os
+from pathlib import Path
+import pwd
+import re
+import shutil
+import stat
+import subprocess
+import tempfile
+
+AGENTS = {'claude': 'dd-agent', 'codex': 'dd-codex', 'gemini': 'dd-gemini'}
+INSTALL_DOCS = {
+    'claude': 'https://code.claude.com/docs/en/setup',
+    'codex': 'https://developers.openai.com/codex/cli/',
+    'gemini': 'https://geminicli.com/docs/get-started/installation/',
+}
+TOOL_PATH = '/usr/local/bin:/usr/bin:/bin'
+
+
+def command(args):
+    return subprocess.run(args, check=True, text=True, capture_output=True, timeout=60)
+
+
+def user(name):
+    try:
+        return pwd.getpwnam(name)
+    except KeyError:
+        return None
+
+
+def group(name):
+    try:
+        return grp.getgrnam(name)
+    except KeyError:
+        return None
+
+
+def member(name, group_name):
+    account, entry = user(name), group(group_name)
+    return bool(account and entry and
+                (account.pw_gid == entry.gr_gid or name in entry.gr_mem))
+
+
+def inspect_path(path, directory=False):
+    # Refuse symlink ancestors as well as targets: root must not follow redirects.
+    for parent in reversed(path.parents):
+        if parent.is_symlink():
+            raise ValueError(f'Symlink in install path: {parent}')
+        if parent.exists() and parent.stat().st_mode & 0o022:
+            raise ValueError(f'Writable install ancestor: {parent}')
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return None
+    expected = stat.S_ISDIR if directory else stat.S_ISREG
+    if not expected(info.st_mode) or (not directory and info.st_nlink != 1):
+        raise ValueError(f'Unsafe install target: {path}')
+    return info
+
+
+def install_path(path, owner, group_name, mode, content):
+    inspect_path(path, content is None)
+    uid, gid = user(owner).pw_uid, group(group_name).gr_gid
+    if content is None:
+        path.mkdir(mode=0o700, exist_ok=True)
+        os.chown(path, uid, gid)
+        os.chmod(path, mode)
+        return
+    name = None
+    try:
+        # sudo ignores dot-named candidates until validation and atomic replacement.
+        with tempfile.NamedTemporaryFile(dir=path.parent, prefix='.dd-install-', delete=False) as out:
+            name = out.name
+            out.write(content)
+            out.flush()
+            os.fchown(out.fileno(), uid, gid)
+            os.fchmod(out.fileno(), mode)
+            os.fsync(out.fileno())
+        if path == Path('/etc/sudoers.d/dynamic-dispatch'):
+            command(['visudo', '-cf', name])
+        os.replace(name, path)
+    finally:
+        if name and os.path.exists(name):
+            os.unlink(name)
+
+
+class Plan:
+    def __init__(self):
+        self.steps = []
+        self.skipped = []
+
+    def add(self, description, action, *args):
+        self.steps.append((description, action, args))
+
+    def path(self, path, owner, group_name, mode, content=None):
+        path = Path(path)
+        info = inspect_path(path, content is None)
+        account, entry = user(owner), group(group_name)
+        if (info and account and entry and info.st_uid == account.pw_uid
+                and info.st_gid == entry.gr_gid and stat.S_IMODE(info.st_mode) == mode
+                and (content is None or path.read_bytes() == content)):
+            self.skipped.append(str(path))
+            return False
+        self.add(f'Install {path} owner={owner}:{group_name} mode={mode:04o}',
+                 install_path, path, owner, group_name, mode, content)
+        return True
+
+    def membership(self, name, group_name):
+        if member(name, group_name):
+            self.skipped.append(f'{name} in {group_name}')
+        else:
+            self.add(f'Add {name} to {group_name}', command,
+                     ['usermod', '--append', '--groups', group_name, name])
+
+    def system_directory(self, path, create=False):
+        path = Path(path)
+        info = inspect_path(path, directory=True)
+        if info is None:
+            if create:
+                self.path(path, 'root', 'root', 0o750)
+                return
+            raise ValueError(f'Required system directory missing: {path}')
+        if info.st_uid != 0 or info.st_mode & 0o022:
+            raise ValueError(f'System directory {path} must be owned by root and not '
+                             'writable by group or others; correct it manually')
+        self.skipped.append(str(path))
+
+    def show(self):
+        for description in self.skipped:
+            print(f'SKIP: {description} (already set up)')
+        for description, _, _ in self.steps:
+            print(f'PLAN: {description}')
+        if not self.steps:
+            print('Nothing to do.')
+
+    def apply(self):
+        completed = []
+        for description, action, args in self.steps:
+            try:
+                action(*args)
+            except Exception as error:
+                print(f'FAILED: {description}: {error}', file=sys.stderr)
+                print('Completed: ' + ('; '.join(completed) or 'none'), file=sys.stderr)
+                print('Some of the failed step may have completed. Rerun the same command '
+                      'to inspect current state and continue.', file=sys.stderr)
+                return 1
+            completed.append(description)
+            print(f'DONE: {description}')
+        return 0
+
+
+def build_plan(dd_user, checkout, agents, container):
+    plan = Plan()
+    plan.system_directory('/usr/local/bin')
+    plan.system_directory('/etc/sudoers.d', create=True)
+    accounts = [AGENTS[agent] for agent in agents]
+    seen_uids = {0, user(dd_user).pw_uid}
+    for name in ['ddwork', *accounts]:
+        entry = group(name)
+        if entry and entry.gr_gid == 0:
+            raise ValueError(f'Group {name} must not use GID 0')
+        if entry:
+            plan.skipped.append(f'group {name}')
+        else:
+            plan.add(f'Create group {name}', command, ['groupadd', name])
+    for name in accounts:
+        account = user(name)
+        if account:
+            if account.pw_uid in seen_uids:
+                raise ValueError(f'Agent {name} needs a distinct non-root UID')
+            seen_uids.add(account.pw_uid)
+            plan.skipped.append(f'account {name}')
+        else:
+            plan.add(f'Create account {name} with private home /home/{name}', command,
+                     ['useradd', '--create-home', '--home-dir', f'/home/{name}',
+                      '--gid', name, '--shell', '/bin/bash',
+                      '--key', 'HOME_MODE=0700', name])
+        plan.membership(name, name)
+        plan.membership(name, 'ddwork')
+        plan.membership(dd_user, name)
+    plan.membership(dd_user, 'ddwork')
+    for path, owner, group_name, mode in [
+        ('/srv/dynamic-dispatch', dd_user, 'ddwork', 0o750),
+        ('/srv/dynamic-dispatch/repos', dd_user, 'ddwork', 0o2750),
+        ('/srv/dynamic-dispatch/worktrees', dd_user, 'ddwork', 0o2750),
+        ('/etc/dynamic-dispatch', 'root', 'ddwork', 0o750),
+    ]:
+        plan.path(path, owner, group_name, mode)
+    source = checkout / 'deploy'
+    for name in ['dd-agent-run', 'dd-rollback']:
+        plan.path('/usr/local/bin/' + name, 'root', 'root', 0o755,
+                  (source / name).read_bytes())
+    sudoers = (source / 'sudoers-dynamic-dispatch').read_text().replace('DD_USER', dd_user)
+    if '(dd-agent, dd-codex)' not in sudoers:
+        raise ValueError('Sudoers template is missing expected agent list (dd-agent, dd-codex)')
+    sudoers = sudoers.replace('(dd-agent, dd-codex)', '(' + ', '.join(accounts) + ')')
+    plan.path('/etc/sudoers.d/dynamic-dispatch', 'root', 'root', 0o440, sudoers.encode())
+    if not container:
+        changed = False
+        for name in ['dynamic-dispatch-rollback.service', 'dynamic-dispatch.service']:
+            content = (source / name).read_text().replace('DD_USER', dd_user)
+            content = content.replace('DD_CHECKOUT', str(checkout).replace('%', '%%'))
+            changed |= plan.path('/etc/systemd/system/' + name, 'root', 'root',
+                                 0o644, content.encode())
+        # Also recover from a previous run that installed units but failed to reload.
+        if changed or 'yes' in command(['systemctl', 'show', 'dynamic-dispatch.service',
+                                       'dynamic-dispatch-rollback.service',
+                                       '--property=NeedDaemonReload', '--value']).stdout.split():
+            plan.add('Reload systemd unit definitions (does not start or enable DD)',
+                     command, ['systemctl', 'daemon-reload'])
+    return plan
+
+
+def preflight(args):
+    if os.geteuid() != 0:
+        raise ValueError('Run with sudo (including --dry-run)')
+    if not args.container and not Path('/run/systemd/system').is_dir():
+        raise ValueError('systemd is required; use --container only for container builds')
+    if not args.dd_user or not re.fullmatch(r'[a-z_][a-z0-9_-]*', args.dd_user):
+        raise ValueError('Specify --dd-user with an existing DD account')
+    account = user(args.dd_user)
+    if not account or account.pw_uid == 0 or args.dd_user in AGENTS.values():
+        raise ValueError('DD needs an existing non-root account separate from the agents')
+    checkout = Path.cwd().resolve()
+    if str(checkout) != str(checkout).strip() or any(c in str(checkout) for c in '\n\r\\'):
+        raise ValueError('Checkout path cannot contain line breaks, backslashes or edge whitespace')
+    if not (checkout / 'main.py').is_file() or not (checkout / 'deploy/dd-install').is_file():
+        raise ValueError("Run from DD's checkout")
+    required = ['groupadd', 'useradd', 'usermod', 'visudo']
+    if not args.container:
+        required.append('systemctl')
+    for executable in required:
+        if not shutil.which(executable):
+            raise ValueError(f'Required system tool missing: {executable}; install it yourself first')
+    for agent in args.agents:
+        if not shutil.which(agent, path=TOOL_PATH):
+            print(f'WARNING: {agent} is not installed in {TOOL_PATH}. '
+                  f'Official instructions: {INSTALL_DOCS[agent]}')
+    return checkout
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--dd-user', default=os.environ.get('SUDO_USER'))
+    parser.add_argument('--agents', nargs='+', choices=AGENTS, default=['claude', 'codex'])
+    parser.add_argument('--container', action='store_true', help='Skip systemd and confirmation')
+    parser.add_argument('--dry-run', action='store_true', help='Only inspect and print the plan')
+    args = parser.parse_args(argv)
+    args.agents = list(dict.fromkeys(args.agents))
+    try:
+        checkout = preflight(args)
+        plan = build_plan(args.dd_user, checkout, args.agents, args.container)
+        plan.show()
+        if args.dry_run or not plan.steps:
+            return 0
+        if not args.container and input('Apply all listed changes? Type yes: ').strip().lower() != 'yes':
+            print('Cancelled; nothing changed.')
+            return 0
+        return plan.apply()
+    except (OSError, ValueError, subprocess.SubprocessError, EOFError) as error:
+        print(f'dd-install: {error}; stopped.', file=sys.stderr)
+        return 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())

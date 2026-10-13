@@ -8,7 +8,81 @@ Its output goes to the system journal instead of `~/dd.log`.
 The sandbox permissions are unchanged; the sudoers template grants the chosen
 DD account access to the existing agent launcher.
 
-## Choose the account and checkout
+## Recommended system setup
+
+From a trusted DD checkout, run this as the existing account that will run DD:
+
+    sudo python3 deploy/dd-install --agents claude codex
+
+Choose any combination of `claude`, `codex` and `gemini`. The default is Claude
+and Codex. DD's account defaults to `SUDO_USER`; use `--dd-user ACCOUNT` when
+running as root or installing for another existing account. It must be a
+non-root account separate from the agent accounts. The checkout's current
+absolute path is written into the service. Run only one installer at a time.
+
+The installer requires Linux, Python 3.11 or newer, and the Debian-family
+`groupadd`, `useradd`, `usermod` and `visudo` tools. Normal host setup also
+requires a running systemd installation and `systemctl`. Install prerequisites
+yourself first; the installer never downloads or installs software. It checks
+selected agent commands in the launcher's `/usr/local/bin:/usr/bin:/bin` path
+and prints official installation links for missing commands. These warnings do
+not prevent system setup; install the tools before running stories.
+
+It prints every planned change and already-completed step, then asks for one
+`yes`. To inspect the same plan without changing anything:
+
+    sudo python3 deploy/dd-install --agents claude codex gemini --dry-run
+
+For a Debian-based Docker image build, after creating DD's non-root account
+and copying its checkout, use that checkout as the working directory and run:
+
+    python3 deploy/dd-install --container --dd-user dd --agents claude codex
+
+`--container` runs as root without a prompt and skips only the systemd units
+and daemon reload. It still installs the rollback executable, launcher and
+validated sudoers rule. It can be combined with `--dry-run`.
+
+Setup creates missing agent accounts (`dd-agent`, `dd-codex`, `dd-gemini`) with
+matching groups and private homes. It adds DD to each selected agent group,
+and DD and selected agents to `ddwork`. Existing accounts and homes are kept;
+existing logins are never edited. It manages these directories non-recursively:
+
+| Directory | Owner | Mode |
+|---|---|---|
+| `/srv/dynamic-dispatch` | DD's account:ddwork | 750 |
+| `/srv/dynamic-dispatch/repos` | DD's account:ddwork | 2750 |
+| `/srv/dynamic-dispatch/worktrees` | DD's account:ddwork | 2750 |
+| `/etc/dynamic-dispatch` | root:ddwork | 750 |
+| `/etc/sudoers.d` (only if missing) | root:root | 750 |
+
+Existing `/usr/local/bin` and `/etc/sudoers.d` belong to the operating system:
+the installer checks that they are directories owned by root and not writable
+by group or others, and never changes their ownership or modes. An unsafe
+directory or missing `/usr/local/bin` stops setup before any changes.
+
+The root-owned launcher and rollback helper use mode 755, the sudoers rule
+uses 440, and the rendered service and rollback unit use 644. The sudo rule
+allows exactly the selected agents; include all desired agents on subsequent
+runs. The rule is checked with `visudo -cf` before atomic installation. The
+rollback unit needs no substitutions: its helper reads DD's account and
+checkout from the rendered main service at recovery time.
+
+Rerunning skips matching state and reports “Nothing to do” when setup matches.
+Changed deployment files are replaced, and managed ownership and modes are
+restored to the table above. Nothing is recursively changed or deleted.
+Symlink targets/ancestors, hard-linked file targets, and group/world-writable
+ancestors are refused; correct unsafe paths manually before retrying. On a
+failure it stops, lists completed work and the failed step, and the same
+command inspects current state and continues. A failed step may be partially
+complete. No rollback deletes previously completed work.
+
+Setup does **not** edit `config.json`, secrets or agent logins, enable or start
+DD, create projects, or contact Plane or GitHub. Complete the configuration
+and login steps below, then explicitly enable/start the service when ready.
+Log out and back in before running DD manually so new group memberships apply.
+The manual commands below remain a reference for individual steps.
+
+## Choose the account and checkout (manual reference)
 
 Run these commands as the account that will run DD, from its checkout.
 For an existing installation, use its service account and checkout instead:
@@ -148,7 +222,7 @@ Doctor runs for the saved project and reports outstanding setup checks. Install
 any needed test tools yourself, confirm dependencies under the agent accounts,
 and restart DD when ready. Setup never installs software or runs repository tests.
 
-## Install (once)
+## Install service files (manual reference)
 
 First stop any copy started by hand with nohup, so two don't run at once:
 
@@ -504,6 +578,11 @@ another device, where you sign in with ChatGPT:
 
 ### Adding Gemini CLI
 
+For system setup, rerun the installer with all desired agents, for example
+`sudo python3 deploy/dd-install --agents claude codex gemini`. It renders the
+Gemini sudo permission automatically. The account and sudo commands below are
+the manual alternative; credentials still need the separate steps below.
+
 Gemini CLI can build stories too. DD reads its JSON output, in the format
 Gemini CLI 0.59.0 prints. Like the other agents it needs its own account and
 group, its own Plane account, and a login only it and DD can read. Here the
@@ -521,7 +600,7 @@ launcher looks, for example with `sudo npm install -g @google/gemini-cli`.
 
 The sudoers template names only `dd-agent` and `dd-codex`. After rendering
 it as above, add `dd-gemini` to the rendered copy, then validate and install
-it as in "Install (once)":
+it as in "Install service files (manual reference)":
 
     sed -i 's/(dd-agent, dd-codex)/(dd-agent, dd-codex, dd-gemini)/' "$DD_DEPLOY_TMP/sudoers-dynamic-dispatch"
 
