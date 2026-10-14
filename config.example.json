@@ -76,7 +76,8 @@
         "in_progress": "PLANE_IN_PROGRESS_STATE_ID",
         "in_review": "PLANE_IN_REVIEW_STATE_ID",
         "blocked": "PLANE_BLOCKED_STATE_ID",
-        "done": "PLANE_DONE_STATE_ID"
+        "done": "PLANE_DONE_STATE_ID",
+        "cancelled": "PLANE_CANCELLED_STATE_ID"
       },
       "cycles": {
         "product_backlog_state": "PLANE_PRODUCT_BACKLOG_STATE_ID",

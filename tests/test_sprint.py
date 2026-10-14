@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 import main as dd_main
-from dispatch import alerts, choose, config, mainhealth, plane, runs, sprint, stories, sync
+from dispatch import alerts, choose, config, mainhealth, plane, plans, runs, sprint, stories, sync
 from dispatch.runs import sprint as sprint_store
 from helpers import Base, MainChanges
 from test_cycles import Board
@@ -671,3 +671,186 @@ class EndOfCycle(SprintBoard):
         runs.save_carry_over(self.conn, 'project', 'old', 'Sprint 0', 'z', 'Zed')
         self.assertEqual([r['issue_id'] for r in runs.claim_carried_over(self.conn, 'project', 'next')], ['a', 'z'])
         self.assertEqual(runs.claim_carried_over(self.conn, 'project', 'later'), [])
+
+
+class EarlyFinish(SprintBoard):
+    def setUp(self):
+        super().setUp()
+        self.rules['b']['depends_on'] = ['a']
+        self.approve()
+        self.project['states']['cancelled'] = 'cancelled'
+        self.project['github_repo'] = 'fake/repo'
+        self.cfg['github'] = {'token': 'fake-token'}
+        for issue in self.items.values():
+            issue['state'] = 'done'
+        self.remote = self.enterContext(mock.patch.object(sprint.github, 'main_revision', return_value='last-merge'))
+        self.enterContext(mock.patch.object(sprint.github, 'token', return_value='fake-token'))
+        self.alert = self.enterContext(mock.patch.object(alerts, 'send'))
+        self.health()
+
+    def health(self, state='green', revision='last-merge'):
+        runs.save_main_health(self.conn, 'project', revision=revision, state=state, since=runs.now(),
+                              failing=[], broken_by=None, alert_owed=False)
+
+    def test_done_ends_yesterday_once_across_restart(self):
+        self.start()
+        end = self.client.set_cycle_end.call_args.args[2]
+        self.assertEqual(sprint.cycle_dates.local_date(end), '2026-10-05')
+        self.assertEqual(sprint.cycle_dates.moment(end).time(), datetime.min.replace(hour=23, minute=59).time())
+        self.assertEqual(self.alert.call_args.kwargs['level'], 'passive')
+        self.client.cycles.return_value[0]['end_date'] = end
+        self.conn.close()
+        self.conn = runs.connect(self.path)
+        self.start()
+        self.client.set_cycle_end.assert_called_once()
+        self.alert.assert_called_once()
+        self.assertTrue(runs.cycle_complete(self.conn, 'project', 'c'))
+
+    def test_started_today_ends_today(self):
+        self.client.cycles.return_value[0]['start_date'] = '2026-10-06'
+        self.start()
+        self.assertEqual(sprint.cycle_dates.local_date(self.client.set_cycle_end.call_args.args[2]), '2026-10-06')
+
+    def test_cancelled_finishes_and_does_not_hold_other_work(self):
+        self.items['a']['state'] = 'cancelled'
+        self.start()
+        self.client.set_cycle_end.assert_called_once()
+        self.assertIsNone(sprint.active_cycle(self.conn, self.client, 'project', self.project))
+        self.assertEqual(sprint.held_stories(self.cfg, self.conn, 'project', self.project,
+                                            [{'id': 'outside', 'state': 'progress'}]), set())
+
+    def test_cancelled_does_not_block_assessing_next_cycle(self):
+        self.items['a']['state'] = 'cancelled'
+        self.assertIsNone(plans.assess_refusal(
+            self.conn, self.client, 'project', self.project, 'next',
+            {'c': self.client.cycles.return_value[0]},
+            {'c': list(self.items.values()), 'next': []}))
+
+    def test_cancelled_dependency_never_starts_and_is_carried_over(self):
+        self.items['a']['state'] = 'cancelled'
+        self.items['b']['state'] = 'sprint'
+        self.rules['b']['depends_on'] = ['a']
+        self.approve()
+        self.poll()
+        self.start()
+        self.assertEqual(self.items['b']['state'], 'sprint')
+        self.client.set_cycle_end.assert_not_called()
+        self.today.now.return_value = sprint.datetime.now.return_value = datetime(2026, 10, 15).astimezone()
+        self.poll()
+        self.start()
+        self.assertEqual(self.items['b']['state'], 'product')
+        self.assertNotIn('b', self.members['c'])
+        self.assertTrue(runs.cycle_complete(self.conn, 'project', 'c'))
+
+    def test_open_story_does_not_end(self):
+        self.items['a']['state'] = 'review'
+        self.start()
+        self.client.set_cycle_end.assert_not_called()
+
+    def test_unfinished_story_removed_while_still_approved_does_not_end(self):
+        self.items = {i: self.items[i] for i in ('a', 'b')}
+        self.approve()
+        self.items['b']['state'] = 'review'
+        self.members['c'] = ['a']
+        self.start()
+        self.assertEqual(runs.cycle_plan(self.conn, 'project', 'c')['status'], runs.PLAN_APPROVED)
+        self.client.set_cycle_end.assert_not_called()
+
+    def test_main_not_checked_since_merge_then_fails_then_passes(self):
+        self.health(revision='before-merge')
+        self.start()
+        self.client.set_cycle_end.assert_not_called()
+        self.health('red')
+        self.start()
+        self.client.set_cycle_end.assert_not_called()
+        self.health()
+        self.start()
+        self.client.set_cycle_end.assert_called_once()
+
+    def test_no_main_check(self):
+        self.conn.execute('DELETE FROM main_health')
+        self.conn.commit()
+        self.start()
+        self.client.set_cycle_end.assert_not_called()
+
+    def test_open_fix_even_after_stored_reference_cleared(self):
+        self.items['fix'] = {'id': 'fix', 'name': 'Fix main: failing tests', 'state': 'review'}
+        self.client.issue_is_open.return_value = True
+        self.start()
+        self.client.set_cycle_end.assert_not_called()
+        self.client.issue_is_open.return_value = False
+        self.start()
+        self.client.set_cycle_end.assert_called_once()
+
+    def test_cycle_work_active_and_slot_held_during_cleanup(self):
+        run_id = runs.enqueue(self.conn, project='project', issue=self.items['a'], agent='alpha', branch='a')
+        self.start()
+        self.client.set_cycle_end.assert_not_called()
+        runs.close(self.conn, run_id, runs.DONE)
+        with self.conn:
+            self.conn.execute('INSERT INTO agent_slots (agent, run_id) VALUES (?, ?)', ('alpha', run_id))
+        self.start()
+        self.client.set_cycle_end.assert_not_called()
+        runs.release_slot(self.conn, run_id)
+        self.start()
+        self.client.set_cycle_end.assert_called_once()
+
+    def test_cycle_assessment_still_active(self):
+        snapshot = runs.assessment_snapshot(self.conn, 'project', 'c')
+        runs.queue_assessments(self.conn, snapshot['id'])
+        self.start()
+        self.client.set_cycle_end.assert_not_called()
+
+    def test_unrelated_work_does_not_prevent_ending(self):
+        runs.enqueue(self.conn, project='project', issue={'id': 'outside', 'sequence_id': 9, 'name': 'Outside'},
+                     agent='alpha', branch='outside')
+        self.start()
+        self.client.set_cycle_end.assert_called_once()
+
+    def test_already_ended_and_unapproved_dates_unchanged(self):
+        self.client.cycles.return_value[0]['end_date'] = '2026-10-05'
+        self.start()
+        self.client.set_cycle_end.assert_not_called()
+        self.client.cycles.return_value[0]['end_date'] = '2026-10-14'
+        runs.set_plan_status(self.conn, 'project', 'c', runs.PLAN_WAITING)
+        self.start()
+        self.client.set_cycle_end.assert_not_called()
+
+    def test_plane_refusal_warns_and_retries(self):
+        self.client.set_cycle_end.side_effect = plane.PlaneError('refused')
+        self.start()
+        self.alert.assert_not_called()
+        self.assertTrue(self.conn.execute("SELECT 1 FROM events WHERE type = 'warning' AND detail LIKE '%refused%'").fetchone())
+        self.client.set_cycle_end.side_effect = None
+        self.start()
+        self.assertEqual(self.client.set_cycle_end.call_count, 2)
+        self.alert.assert_called_once()
+
+    def test_lost_patch_response_recovers_after_end_date(self):
+        def lost(pid, cid, end):
+            self.client.cycles.return_value[0]['end_date'] = end
+            raise plane.PlaneError('reply lost')
+        self.client.set_cycle_end.side_effect = lost
+        self.start()
+        self.alert.assert_not_called()
+        self.start()
+        self.client.set_cycle_end.assert_called_once()
+        self.alert.assert_called_once()
+
+    def test_lost_patch_response_recovers_with_minute_precision(self):
+        runs.save_early_cycle_end(self.conn, 'project', 'c', '2026-10-05T23:59:59.999999+00:00')
+        self.client.cycles.return_value[0]['end_date'] = '2026-10-05T23:59:00Z'
+        self.start()
+        self.client.set_cycle_end.assert_not_called()
+        self.alert.assert_called_once()
+        self.conn.close()
+        self.conn = runs.connect(self.path)
+        self.start()
+        self.alert.assert_called_once()
+
+    def test_lost_patch_response_does_not_match_a_different_minute(self):
+        runs.save_early_cycle_end(self.conn, 'project', 'c', '2026-10-05T23:59:00+00:00')
+        self.client.cycles.return_value[0]['end_date'] = '2026-10-05T23:58:59.999999Z'
+        self.start()
+        self.client.set_cycle_end.assert_not_called()
+        self.alert.assert_not_called()

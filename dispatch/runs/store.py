@@ -79,6 +79,10 @@ CREATE TABLE IF NOT EXISTS waits (
     since           TEXT NOT NULL,
     comment_posted  INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS early_cycle_ends (
+    project TEXT NOT NULL, cycle_id TEXT NOT NULL, end_date TEXT NOT NULL,
+    alerted INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (project, cycle_id)
+);
 CREATE TABLE IF NOT EXISTS cycle_members (
     project TEXT NOT NULL,
     cycle_id TEXT NOT NULL,

@@ -34,7 +34,8 @@ from .updates import (claim_self_update_notice, claim_self_update_restart, rollb
 from .small_tables import (heartbeat, login_alert_keys, mark_login_alert, record_heartbeat, record_start_date,
                            record_usage, start_date_set, usage_records)
 from .cycles import (PLAN_APPROVED, PLAN_ASSESSING, PLAN_COMPLETE, PLAN_NEW, PLAN_PLANNED, PLAN_WAITING,
-                     claim_carried_over, complete_cycle, cycle_complete, cycle_members, cycle_plan, drop_carry_over,
+                     claim_carried_over, claim_early_cycle_alert, complete_cycle, cycle_complete, cycle_members, cycle_plan,
+                     cycle_work_active, drop_carry_over, early_cycle_end, save_early_cycle_end,
                      end_cycle_membership, finish_carry_over,
                      forget_cycle_member, is_plan_item, mark_plan_replied, plan_command, plan_issue_ids,
                      record_plan_command, remember_cycle_member, save_carry_over, save_cycle_plan, set_plan_status,

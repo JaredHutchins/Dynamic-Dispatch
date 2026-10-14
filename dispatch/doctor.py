@@ -215,6 +215,9 @@ def _check_sprint_pull(cfg, project, orch, prefix, check, require, dependency):
     check(prefix + ' approver membership', approver, "The approver's account is a project member.",
           'Cannot verify the approver; set plane approver_user_id to the Plane user ID of a project member.',
           service='Plane', credential='Plane Orchestrator token', skip=dependency)
+    check(prefix + ' Cancelled state', lambda: require(project['states'].get('cancelled')),
+          'states cancelled is set, as sprint-pull needs.',
+          'Set states cancelled to the Cancelled state ID so cancelled stories finish their Cycle.')
     check(prefix + ' Done state', lambda: require(project['states'].get('done')),
           'states done is set, as sprint-pull needs.',
           'Sprint-pull moves merged stories to Done itself; set states done to the Done state ID.')

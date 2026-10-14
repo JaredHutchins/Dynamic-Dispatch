@@ -223,6 +223,7 @@ class Doctor(unittest.TestCase):
         self.cfg['plane']['approver_user_id'] = 'approver'
         project = self.cfg['projects']['fake-private-project']
         project['states']['done'] = 'state'
+        project['states']['cancelled'] = 'state'
         project['cycles'] = {'product_backlog_state': 'backlog', 'sprint_backlog_state': 'sprint',
                              'carried_over_label_id': 'carried'}
         self.client.states.return_value = [{'id': 'state'}, {'id': 'backlog'}, {'id': 'sprint'}]
@@ -241,6 +242,13 @@ class Doctor(unittest.TestCase):
         self.assertEqual(code, 0)
         for check in ('sprint-pull states', 'carried-over label', 'approver membership', 'Done state'):
             self.assertIn('OK Plane project 1 ' + check + ':', output)
+
+    def test_sprint_pull_requires_cancelled_state(self):
+        self.sprint_pull()
+        del self.cfg['projects']['fake-private-project']['states']['cancelled']
+        code, output = self.run_doctor()
+        self.assertNotEqual(code, 0)
+        self.assertIn('FAIL Plane project 1 Cancelled state:', output)
 
     def test_sprint_pull_checks_fail_independently(self):
         cases = [('states', [{'id': 'state'}, {'id': 'backlog'}], 'sprint-pull states'),

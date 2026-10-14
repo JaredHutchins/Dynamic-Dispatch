@@ -124,9 +124,10 @@ def load(path=None, *, allow_empty_projects=False):
     for name, project in cfg["projects"].items():
         _require(project, REQUIRED_PROJECT, f"project '{name}'")
         _require(project["states"], REQUIRED_STATES, f"project '{name}' states")
-        done = project["states"].get("done")
-        if done is not None and (not isinstance(done, str) or not done.strip()):
-            raise ConfigError(f"project '{name}' states done must be a Plane state ID, or left out")
+        for state in ('done', 'cancelled'):
+            value = project['states'].get(state)
+            if value is not None and (not isinstance(value, str) or not value.strip()):
+                raise ConfigError(f"project '{name}' states {state} must be a Plane state ID, or left out")
         if "agents" not in project and "default_agent" not in project:
             raise ConfigError(f"project '{name}' is missing: agents")
         allowed = project_agents(project)
