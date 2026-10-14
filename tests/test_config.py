@@ -25,6 +25,17 @@ class Config(unittest.TestCase):
         c["github"]["private_key_path"] = str(key)
         return c
 
+    def test_plane_api_url_is_optional_and_validated(self):
+        c = self.base()
+        self.assertNotIn("api_url", config.load(self.write(c))["plane"])
+        for invalid in (None, "", 42, "ftp://plane.invalid", "https://", "https://user:pw@plane.invalid",
+                        "https://plane.invalid?query", "https://plane.invalid/#fragment", " https://plane.invalid"):
+            c["plane"]["api_url"] = invalid
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(config.ConfigError, "plane api_url"):
+                config.load(self.write(c))
+        c["plane"]["api_url"] = "https://api.plane.so"
+        self.assertEqual(config.load(self.write(c))["plane"]["api_url"], "https://api.plane.so")
+
     def test_prompt_via_validation(self):
         c = self.base()
         agent = c["agents"]["codex"]

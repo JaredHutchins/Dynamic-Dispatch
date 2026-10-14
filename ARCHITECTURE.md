@@ -547,6 +547,12 @@ installs no software.
 
 ### Plane
 
+Plane requests use optional `plane.api_url`, falling back to `plane.base_url`;
+web links always use `base_url`. DD identifies itself in every API request.
+HTTP 429 is retried up to three times after Retry-After (seconds or HTTP date),
+or five seconds when absent or invalid. Member creation starts with v1 and
+uses v2 only for Cloud's missing invitation-fields response.
+
 - **Project: Dynamic Dispatch** — this product's own backlog. Cycles, Views and Pages enabled.
 - State IDs captured via `GET /api/v1/workspaces/{slug}/projects/{id}/states/` with `X-API-Key`.
 

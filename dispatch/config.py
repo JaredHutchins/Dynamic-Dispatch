@@ -13,6 +13,7 @@ import shutil
 import stat
 import tempfile
 from pathlib import Path
+from urllib.parse import urlsplit
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
 
@@ -79,6 +80,7 @@ def load(path=None, *, allow_empty_projects=False):
     _require(cfg, REQUIRED_TOP, "config.json")
     _require(cfg["sandbox"], ("user", "launcher"), "sandbox")
     _check_github(cfg["github"])
+    _check_plane(cfg["plane"])
     if not cfg["agents"]:
         raise ConfigError("config.json defines no agents")
     if not cfg["projects"] and not allow_empty_projects:
@@ -139,6 +141,23 @@ def load(path=None, *, allow_empty_projects=False):
     _check_cycles(cfg)
     cooldown_minutes(cfg)
     return cfg
+
+
+def _check_plane(p):
+    if "api_url" not in p:
+        return
+    value = p["api_url"]
+    try:
+        url = urlsplit(value) if isinstance(value, str) else None
+        valid = (url and url.scheme in ("http", "https") and url.hostname
+                 and not url.username and not url.password and not url.query and not url.fragment
+                 and not any(c.isspace() for c in value))
+        if valid:
+            url.port
+    except ValueError:
+        valid = False
+    if not valid:
+        raise ConfigError("plane api_url must be an http:// or https:// address without a login, query or #")
 
 
 def _check_cycles(cfg):

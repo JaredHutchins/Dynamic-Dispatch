@@ -116,7 +116,7 @@ def _plane_url(value):
 def _plane_user(p, token, who):
     """The token's Plane user ID, once it is shown to reach the workspace."""
     try:
-        client = plane.Plane(p['base_url'], p['workspace_slug'], token)
+        client = plane.Plane(plane.api_url(p), p['workspace_slug'], token)
         user = client.current_user()
         client.projects()
         return user

@@ -1,0 +1,10 @@
+{
+  "cloud_member_refusal": {
+    "status": 400,
+    "body": {"error": "Expected email, display_name, workspace_slug, project_id, one or more of the fields are missing."}
+  },
+  "member_added": {"status": 200, "body": {"id": "fake-member"}},
+  "issue": {"status": 200, "body": {"id": "fake-issue"}},
+  "limited": {"status": 429, "headers": {"Retry-After": "12"}, "body": {"detail": "Request was throttled."}},
+  "limited_without_delay": {"status": 429, "body": {"detail": "Request was throttled."}}
+}
