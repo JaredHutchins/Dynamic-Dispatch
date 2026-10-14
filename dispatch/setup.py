@@ -172,9 +172,10 @@ def _github_login(g, app):
     permissions = details.get('permissions', {})
     if permissions.get('contents') not in ('read', 'write') or \
             any(permissions.get(p) != 'write' for p in ('pull_requests', 'statuses')):
-        # The App works; its permissions can be fixed later, and doctor checks them again.
-        print('The App signed in, but needs contents read, pull requests write and commit statuses write. '
-              'Grant them and approve the change in GitHub.')
+        # A fresh token after the next answer picks up permissions granted meanwhile.
+        github.forget_token(g)
+        raise Invalid('The App signed in, but needs contents read, pull requests write and commit statuses '
+                      'write. Grant them and approve the change in GitHub, then answer again.')
     return credential
 
 
@@ -310,8 +311,15 @@ def _finish(path, cfg):
     """Offer a project, run doctor and say how to start DD."""
     has_projects = bool(cfg.get('projects'))
     if _yes('Add another project now?' if has_projects else 'Add the first project now?', not has_projects):
-        add_project.run(path)
-        has_projects = bool(config.load(path, allow_empty_projects=True)['projects'])
+        before = config.load(path, allow_empty_projects=True)['projects']
+        result = add_project.run(path)
+        projects = config.load(path, allow_empty_projects=True)['projects']
+        # A saved project whose own doctor check failed is still added; doctor below reports it again.
+        if result and projects == before:
+            print('Adding the project did not finish, so no project was added; the reason is above. '
+                  'config.json is saved: fix that, then run python3 main.py --add-project.')
+            return 1
+        has_projects = bool(projects)
     if not has_projects:
         print('Doctor needs a project to check; add one with: python3 main.py --add-project')
     print('Running doctor.')

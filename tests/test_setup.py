@@ -42,6 +42,9 @@ class Services:
 
     def __init__(self):
         self.permissions = dict(PERMISSIONS)
+        # Permissions for the next installation tokens issued, before falling back to self.permissions.
+        self.grants = []
+        self.issued = 0
 
     def refuse(self, url, code, credential):
         return urllib.error.HTTPError(url, code, 'refused', {}, io.BytesIO(f'bad credential {credential}'.encode()))
@@ -59,8 +62,9 @@ class Services:
             raise self.refuse(url, 404, token)
         credential = request.get_header('Authorization').removeprefix('Bearer ')
         if url.endswith('/app/installations/42/access_tokens'):
+            self.issued += 1
             return Response({'token': INSTALLATION, 'expires_at': '2099-01-01T00:00:00Z',
-                             'permissions': self.permissions})
+                             'permissions': self.grants.pop(0) if self.grants else self.permissions})
         if credential not in (GH_TOKEN, INSTALLATION):
             raise self.refuse(url, 401, credential)
         if url.endswith('/user'):
@@ -248,12 +252,45 @@ class SetupTests(unittest.TestCase):
         projects.assert_called_once_with(self.path)
         self.assert_no_secret_leaked()
 
-    def test_app_with_too_few_permissions_is_saved_with_a_warning(self):
+    def test_app_with_too_few_permissions_is_refused(self):
         self.services.permissions = {'contents': 'read'}
         answers = self.first_answers()
         del answers[2:5]
-        self.assertEqual(self.run_setup(answers)[0], 0)
+        result, terminal, *_ = self.run_setup(answers[:9])
+        self.assertEqual(result, 1)
+        # Refused, so the App's details are asked for again rather than going on to the approver.
+        self.assertTrue(terminal.prompts[-1].startswith('GitHub App ID [1234]'), terminal.prompts[-1])
         self.assertIn('needs contents read, pull requests write and commit statuses write', self.output.getvalue())
+        self.assertFalse(self.path.exists())
+        self.assert_no_secret_leaked()
+
+    def test_app_is_asked_for_again_until_its_permissions_are_granted(self):
+        self.services.grants = [{'contents': 'read'}]
+        answers = self.first_answers()
+        # Enter keeps the App ID, installation ID and key once the permissions are granted.
+        answers[12:12] = ['', '', '']
+        result, *_ = self.run_setup(answers)
+        self.assertEqual(result, 0)
+        self.assertIn('needs contents read, pull requests write and commit statuses write', self.output.getvalue())
+        # The second answer was checked with a new token, not the one issued before the grant.
+        self.assertEqual(self.services.issued, 2)
+        self.assertEqual(json.loads(self.path.read_text())['github']['app_id'], '1234')
+        self.assert_no_secret_leaked()
+
+    def test_failed_first_project_is_not_reported_as_done(self):
+        answers = self.first_answers()
+        answers[-1] = 'yes'
+        result, _, projects, doctor = self.run_setup(answers, add_project=1)
+        self.assertEqual(result, 1)
+        projects.assert_called_once_with(self.path)
+        doctor.assert_not_called()
+        out = self.output.getvalue()
+        self.assertIn('Adding the project did not finish', out)
+        self.assertIn('run python3 main.py --add-project', out)
+        self.assertNotIn(setup.START_COMMAND, out)
+        # The answers already given stay saved, so only the project needs doing again.
+        self.assertEqual(json.loads(self.path.read_text())['plane']['orchestrator_token'], ORCH)
+        self.assert_no_secret_leaked()
 
     def test_unsafe_answers_are_refused(self):
         answers = ['https://app.plane.so', 'https://user:pw@plane.example.com', PLANE, 'work/space']

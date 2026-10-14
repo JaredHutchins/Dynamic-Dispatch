@@ -112,6 +112,12 @@ def token(github_cfg):
         return _token(github_cfg)
 
 
+def forget_token(github_cfg):
+    """Drop a cached installation token, so the next one reports the App's current permissions."""
+    with _token_lock:
+        _installation_tokens.pop(tuple(str(github_cfg[k]) for k in APP_KEYS), None)
+
+
 def _token(github_cfg):
     """The token to open and look up pull requests with.
 

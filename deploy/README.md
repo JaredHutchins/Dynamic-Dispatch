@@ -101,7 +101,8 @@ Have these ready first; setup tells you where to make them but makes none:
 Setup asks which agents the installer set up (`claude`, `codex`, `gemini`)
 and checks each answer as it is given: the Plane address and each token sign
 in and reach the workspace, each agent has its own Plane account, the App
-signs in (or the token works) and the approver's GitHub account exists. A
+signs in with the permissions above (or the token works) and the approver's
+GitHub account exists. A
 failed check says what to fix, never the secret, and asks again. Secrets are
 typed hidden and are written only to `config.json`, with mode 600.
 
@@ -115,6 +116,10 @@ doctor, and prints the command that starts DD. Finish the "Agent logins" and
 fix any doctor failures before running it:
 
     sudo systemctl enable --now dynamic-dispatch
+
+If adding the project stops, setup says so and ends there, without running
+the doctor or printing that command. The answers already given stay saved:
+fix what `--add-project` reported, then run `python3 main.py --add-project`.
 
 The sections marked "manual reference" below cover the same steps by hand.
 

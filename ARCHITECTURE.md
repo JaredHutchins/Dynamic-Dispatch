@@ -520,8 +520,13 @@ not the defaults loading adds, and a value kept with Enter keeps its saved
 form, so the same answers save nothing. Agents come from the installer's
 names, and setup only adds them: removing one could orphan a project's agent
 list. The App's private key stays in its own file; setup records its path.
-It ends by offering `--add-project`, running doctor and printing the start
-command; it never starts DD.
+An App without contents read, pull requests write and commit statuses write
+is refused like a rejected login, and its cached installation token is
+dropped so the next answer is checked against the permissions GitHub reports
+then. It ends by offering `--add-project`, running doctor and printing the
+start command; it never starts DD. If `--add-project` fails without adding a
+project, setup stops there with a failure, keeping the saved config, so
+neither doctor nor the start command suggests setup finished.
 
 `python3 main.py --add-project` coordinates onboarding in `dispatch/add_project.py`.
 GitHub repository creation and access grants remain manual prerequisites. Setup
