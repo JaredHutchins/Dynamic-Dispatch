@@ -71,7 +71,7 @@ class PlaneCloud(unittest.TestCase):
         self.assertEqual(json.loads(req.data), {'member': 'user', 'role': 20})
 
     def test_cloud_member_fallback(self):
-        for role, name in ((20, 'admin'), (15, 'member')):
+        for role, name in ((20, 'admin'), (15, 'contributor'), (5, 'guest')):
             self.urlopen.reset_mock()
             self.urlopen.side_effect = [self.response('cloud_member_refusal'), self.response('member_added')]
             self.client.add_member('project', 'user', role)
@@ -95,6 +95,7 @@ class PlaneCloud(unittest.TestCase):
         for sample, headers, delay in (
                 ('limited', None, 12), ('limited_without_delay', None, 5),
                 ('limited', {'Retry-After': 'bad'}, 5),
+                ('limited', {'Retry-After': '60'}, 60),
                 ('limited', {'Retry-After': 'Thu, 01 Jan 1970 00:00:12 GMT'}, 12)):
             self.sleep.reset_mock()
             self.urlopen.reset_mock()
@@ -112,3 +113,18 @@ class PlaneCloud(unittest.TestCase):
         self.assertIn('Request was throttled.', str(error.exception))
         self.assertEqual(self.urlopen.call_count, 4)
         self.assertEqual(self.sleep.call_count, 3)
+
+    def test_rate_limit_long_wait_reports_failure_without_retry(self):
+        for value in ('61', '3600', 'Thu, 01 Jan 1970 00:01:01 GMT'):
+            with self.subTest(retry_after=value):
+                self.sleep.reset_mock()
+                self.urlopen.reset_mock()
+                self.urlopen.side_effect = [
+                    self.response('limited', {'Retry-After': value}) for _ in range(4)]
+                with mock.patch.object(plane.time, 'time', return_value=0):
+                    with self.assertRaises(plane.PlaneError) as error:
+                        self.client.get('/projects/')
+                self.assertEqual(error.exception.status, 429)
+                self.assertIn('Request was throttled.', str(error.exception))
+                self.assertEqual(self.urlopen.call_count, 1)
+                self.sleep.assert_not_called()

@@ -25,6 +25,7 @@ _assignments = None
 
 RATE_LIMIT_RETRIES = 3
 RATE_LIMIT_DELAY = 5
+RATE_LIMIT_MAX_DELAY = 60
 
 COMMENT_LIMIT = 20000  # characters
 
@@ -110,7 +111,8 @@ class Plane:
                 with e:
                     detail = e.read().decode(errors="replace")[:500]
                     delay = _retry_delay(e.headers.get("Retry-After")) if e.code == 429 else None
-                if e.code == 429 and attempt < RATE_LIMIT_RETRIES:
+                # Longer waits would block checks; let the next poll try again.
+                if e.code == 429 and attempt < RATE_LIMIT_RETRIES and delay <= RATE_LIMIT_MAX_DELAY:
                     time.sleep(delay)
                     continue
                 if e.code in (401, 403):
@@ -178,7 +180,7 @@ class Plane:
         except PlaneError as e:
             # Cloud's v1 endpoint expects invitation fields instead of a member ID.
             refusal = "Expected email, display_name, workspace_slug, project_id, one or more of the fields are missing."
-            roles = {20: "admin", 15: "member", 5: "guest"}
+            roles = {20: "admin", 15: "contributor", 5: "guest"}
             if e.status != 400 or refusal not in str(e) or role not in roles:
                 raise
         return self._request("POST", path, {"member_id": user_id, "role": roles[role]}, base=self.v2_base)
