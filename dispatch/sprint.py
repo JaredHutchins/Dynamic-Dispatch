@@ -214,8 +214,7 @@ def finish_early(cfg, conn, client, name, project, cycle_list):
         if saved and saved['alerted']:
             continue
         # Recover a successful PATCH whose response or subsequent store write was lost.
-        if (saved and cycle.get('end_date')
-                and cycle_dates.moment(cycle['end_date'], end=True) == cycle_dates.moment(saved['end_date'])):
+        if saved and cycle.get('end_date') and cycle_dates.same_minute(cycle['end_date'], saved['end_date']):
             announce_early(cfg, conn, name, cycle, saved['end_date'])
             continue
         plan = runs.cycle_plan(conn, name, cycle['id'])

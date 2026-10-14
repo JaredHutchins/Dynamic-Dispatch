@@ -46,12 +46,18 @@ class Dates(unittest.TestCase):
     def test_early_end_uses_target_days_zone_and_clamps_start(self):
         self.zone('America/Chicago')
         for day, start, expected in (
-                ('2026-10-14', '2026-10-01', '2026-10-14T04:59:59.999999+00:00'),
-                ('2026-10-14', '2026-10-14T05:00:00Z', '2026-10-15T04:59:59.999999+00:00'),
-                ('2026-03-08', '2026-03-01', '2026-03-08T05:59:59.999999+00:00')):
+                ('2026-10-14', '2026-10-01', '2026-10-14T04:59:00+00:00'),
+                ('2026-10-14', '2026-10-14T05:00:00Z', '2026-10-15T04:59:00+00:00'),
+                ('2026-03-08', '2026-03-01', '2026-03-08T05:59:00+00:00')):
             with self.subTest(day=day, start=start):
                 now = datetime.fromisoformat(day + 'T12:00:00').astimezone()
                 self.assertEqual(cycle_dates.early_end(start, now), expected)
+
+    def test_end_times_match_to_the_minute(self):
+        self.zone('America/Chicago')
+        self.assertTrue(cycle_dates.same_minute('2026-10-14T04:59:00Z', '2026-10-14T04:59:59.999999+00:00'))
+        self.assertTrue(cycle_dates.same_minute('2026-10-13', '2026-10-14T04:59:00+00:00'))
+        self.assertFalse(cycle_dates.same_minute('2026-10-14T04:58:59.999999Z', '2026-10-14T04:59:00+00:00'))
 
     def test_plain_dates_use_the_offset_of_the_target_day(self):
         self.zone('America/Chicago')

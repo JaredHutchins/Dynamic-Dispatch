@@ -696,7 +696,7 @@ class EarlyFinish(SprintBoard):
         self.start()
         end = self.client.set_cycle_end.call_args.args[2]
         self.assertEqual(sprint.cycle_dates.local_date(end), '2026-10-05')
-        self.assertEqual(sprint.cycle_dates.moment(end).time(), datetime.max.time())
+        self.assertEqual(sprint.cycle_dates.moment(end).time(), datetime.min.replace(hour=23, minute=59).time())
         self.assertEqual(self.alert.call_args.kwargs['level'], 'passive')
         self.client.cycles.return_value[0]['end_date'] = end
         self.conn.close()
@@ -827,3 +827,21 @@ class EarlyFinish(SprintBoard):
         self.start()
         self.client.set_cycle_end.assert_called_once()
         self.alert.assert_called_once()
+
+    def test_lost_patch_response_recovers_with_minute_precision(self):
+        runs.save_early_cycle_end(self.conn, 'project', 'c', '2026-10-05T23:59:59.999999+00:00')
+        self.client.cycles.return_value[0]['end_date'] = '2026-10-05T23:59:00Z'
+        self.start()
+        self.client.set_cycle_end.assert_not_called()
+        self.alert.assert_called_once()
+        self.conn.close()
+        self.conn = runs.connect(self.path)
+        self.start()
+        self.alert.assert_called_once()
+
+    def test_lost_patch_response_does_not_match_a_different_minute(self):
+        runs.save_early_cycle_end(self.conn, 'project', 'c', '2026-10-05T23:59:00+00:00')
+        self.client.cycles.return_value[0]['end_date'] = '2026-10-05T23:58:59.999999Z'
+        self.start()
+        self.client.set_cycle_end.assert_not_called()
+        self.alert.assert_not_called()
