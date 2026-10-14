@@ -42,7 +42,9 @@ INTRO = """\
 DD setup writes config.json. Run it as DD's account, after the installer.
 Before you start, have ready:
 - Plane API tokens for the Orchestrator and each agent's Plane account, made in
-  Plane's profile settings while signed in as that account.
+  Plane's profile settings while signed in as that account. An identity that
+  config.json already gives a Plane app (bot), as deploy/README.md "Using Plane
+  Cloud" describes, keeps it and is checked instead.
 - A GitHub App for DD (https://github.com/settings/apps/new) with contents read,
   pull requests write and commit statuses write, installed on your repositories,
   and its private key saved on this machine with chmod 600.
@@ -113,10 +115,9 @@ def _plane_url(value):
         raise Invalid('Plane Cloud is not supported yet; enter your self-hosted Plane address.')
 
 
-def _plane_user(p, token, who):
-    """The token's Plane user ID, once it is shown to reach the workspace."""
+def _plane_user(client, who):
+    """The login's Plane user ID, once it is shown to reach the workspace."""
     try:
-        client = plane.Plane(plane.api_url(p), p['workspace_slug'], token)
         user = client.current_user()
         client.projects()
         return user
@@ -134,9 +135,12 @@ def _plane(cfg):
         p['workspace_slug'] = _ask('Plane workspace slug (the first part of the path in any Plane page)',
                                    p.get('workspace_slug'),
                                    check=_matches(r'[\w-]+', 'Enter the slug alone, without slashes.'))
-        p['orchestrator_token'] = _ask("Orchestrator's Plane API token", p.get('orchestrator_token'), secret=True)
+        bot = 'orchestrator_bot' in p
+        if not bot:
+            p['orchestrator_token'] = _ask("Orchestrator's Plane API token", p.get('orchestrator_token'), secret=True)
         try:
-            user = _plane_user(p, p['orchestrator_token'], "The Orchestrator's Plane token")
+            user = _plane_user(plane.orchestrator_login(cfg), "The Orchestrator's Plane app (plane.orchestrator_bot)"
+                               if bot else "The Orchestrator's Plane token")
             break
         except Invalid as error:
             print(error)
@@ -255,12 +259,18 @@ def _agents(cfg, orchestrator):
     for name, agent in agents.items():
         who = agent.get('display_name') or name
 
-        def token(value):
-            user = _plane_user(cfg['plane'], value, f"{who}'s Plane token")
+        def login(value=None):
+            what = f"{who}'s Plane app (plane_bot)" if value is None else f"{who}'s Plane token"
+            user = _plane_user(plane.as_agent(cfg, agent if value is None else {'plane_token': value}), what)
             if user in users:
-                raise Invalid(f"That token signs in as the Orchestrator or another agent; use {who}'s own Plane account.")
+                raise Invalid(f"{'That app' if value is None else 'That token'} signs in as the Orchestrator or "
+                              f"another agent; use {who}'s own Plane account.")
             users.add(user)
-        agent['plane_token'] = _ask(f"{who}'s Plane API token", agent.get('plane_token'), secret=True, check=token)
+        if 'plane_bot' in agent:
+            # Setup can't fix a bot's settings, so a failing one stops it for config.json to be corrected.
+            login()
+        else:
+            agent['plane_token'] = _ask(f"{who}'s Plane API token", agent.get('plane_token'), secret=True, check=login)
         author = agent.setdefault('git_author', {})
         author['name'] = _ask(f"{who}'s commit name", author.get('name') or who,
                               check=_matches(r'[^\n<>]+', 'Enter a name without < or >.'))

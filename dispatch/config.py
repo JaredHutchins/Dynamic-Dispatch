@@ -18,10 +18,12 @@ from urllib.parse import urlsplit
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
 
 REQUIRED_TOP = ("plane", "github", "sandbox", "agents", "projects", "db_path")
-REQUIRED_AGENT = ("display_name", "plane_token", "command", "parser", "git_author")
+REQUIRED_AGENT = ("display_name", "command", "parser", "git_author")
 REQUIRED_PROJECT = ("plane_project_id", "github_repo", "repo_path", "worktree_root", "states")
 REQUIRED_STATES = ("in_progress", "in_review", "blocked")
 GITHUB_APP = ("app_id", "installation_id", "private_key_path")
+# A Plane app (bot) login, in place of a Plane identity's personal token.
+PLANE_BOT = ("client_id", "client_secret", "app_installation_id")
 DEFAULT_COOLDOWN_MINUTES = 60
 REQUIRED_CYCLES = ("product_backlog_state", "sprint_backlog_state", "carried_over_label_id")
 # Sprint-pull's whole numbers: (default, smallest allowed).
@@ -68,19 +70,40 @@ def _check_github(github_cfg):
         raise ConfigError("github uses a GitHub App, which needs the openssl command to sign in")
 
 
-def load(path=None, *, allow_empty_projects=False):
+def _check_plane_login(holder, token_key, bot_key, where):
+    """Exactly one of a personal token and a Plane app (bot) for each Plane identity."""
+    if (token_key in holder) == (bot_key in holder):
+        raise ConfigError(f"{where} needs exactly one of {token_key} (a personal Plane token) "
+                          f"or {bot_key} (a Plane app)")
+    if token_key in holder:
+        return
+    bot = holder[bot_key]
+    if not isinstance(bot, dict):
+        raise ConfigError(f"{where} {bot_key} must be an object with {', '.join(PLANE_BOT)}")
+    _require(bot, PLANE_BOT, f"{where} {bot_key}")
+    for key in PLANE_BOT:
+        if not isinstance(bot[key], str) or not bot[key].strip():
+            raise ConfigError(f"{where} {bot_key} {key} must be the value from the app's settings or install address")
+
+
+def read(path=None):
+    """config.json's contents, unchecked, once it is shown to be private."""
     path = Path(path or DEFAULT_CONFIG_PATH)
     if not path.exists():
         raise ConfigError(f"No config at {path}. Copy config.example.json and fill it in.")
     _require_private(path)
-
     with open(path) as f:
-        cfg = json.load(f)
+        return json.load(f)
+
+
+def load(path=None, *, allow_empty_projects=False):
+    cfg = read(path)
 
     _require(cfg, REQUIRED_TOP, "config.json")
     _require(cfg["sandbox"], ("user", "launcher"), "sandbox")
     _check_github(cfg["github"])
     _check_plane(cfg["plane"])
+    _check_plane_login(cfg["plane"], "orchestrator_token", "orchestrator_bot", "plane")
     if not cfg["agents"]:
         raise ConfigError("config.json defines no agents")
     if not cfg["projects"] and not allow_empty_projects:
@@ -93,6 +116,7 @@ def load(path=None, *, allow_empty_projects=False):
                               "processes kills everything its account runs, so two runs on the "
                               "same account would kill each other.")
         _require(agent_cfg, REQUIRED_AGENT, f"agent '{name}'")
+        _check_plane_login(agent_cfg, "plane_token", "plane_bot", f"agent '{name}'")
         _require(agent_cfg["git_author"], ("name", "email"), f"agent '{name}' git_author")
         prompt_via = agent_cfg.setdefault("prompt_via", "argument")
         if prompt_via not in ("argument", "stdin"):

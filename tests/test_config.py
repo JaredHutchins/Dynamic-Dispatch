@@ -36,6 +36,32 @@ class Config(unittest.TestCase):
         c["plane"]["api_url"] = "https://api.plane.so"
         self.assertEqual(config.load(self.write(c))["plane"]["api_url"], "https://api.plane.so")
 
+    def test_each_plane_identity_has_a_token_or_an_app(self):
+        bot = {"client_id": "fake-client", "client_secret": "fake-client-secret", "app_installation_id": "fake-install"}
+        for holder, token_key, bot_key in ((lambda c: c["plane"], "orchestrator_token", "orchestrator_bot"),
+                                           (lambda c: c["agents"]["codex"], "plane_token", "plane_bot")):
+            with self.subTest(identity=bot_key):
+                c = self.base()
+                holder(c)[bot_key] = dict(bot)
+                with self.assertRaisesRegex(config.ConfigError, f"exactly one of {token_key}.*or {bot_key}"):
+                    config.load(self.write(c))
+                del holder(c)[token_key]
+                self.assertEqual(holder(config.load(self.write(c)))[bot_key], bot)
+                del holder(c)[bot_key]
+                with self.assertRaisesRegex(config.ConfigError, f"exactly one of {token_key}"):
+                    config.load(self.write(c))
+                for key in bot:
+                    holder(c)[bot_key] = {k: v for k, v in bot.items() if k != key}
+                    with self.assertRaisesRegex(config.ConfigError, f"{bot_key} is missing: {key}"):
+                        config.load(self.write(c))
+                    for invalid in ("", " ", 42, None):
+                        holder(c)[bot_key] = dict(bot, **{key: invalid})
+                        with self.assertRaisesRegex(config.ConfigError, f"{bot_key} {key} must be"):
+                            config.load(self.write(c))
+                holder(c)[bot_key] = "fake-client-secret"
+                with self.assertRaisesRegex(config.ConfigError, f"{bot_key} must be an object"):
+                    config.load(self.write(c))
+
     def test_prompt_via_validation(self):
         c = self.base()
         agent = c["agents"]["codex"]

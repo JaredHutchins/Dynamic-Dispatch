@@ -101,7 +101,7 @@ class SetupTests(unittest.TestCase):
         self.path.write_text(json.dumps(self.cfg))
         self.assertEqual(self.run_setup()[0], 0)
         self.mocks['plane.Plane'].assert_called_once_with(
-            'https://api.plane.so', 'test', 'fake-secret-plane')
+            'https://api.plane.so', 'test', 'fake-secret-plane', 'Plane login for Orchestrator', bot=None)
         self.assertEqual(config.load(self.path)['plane']['base_url'], 'https://app.plane.so')
 
     def test_all_steps_and_repeat(self):

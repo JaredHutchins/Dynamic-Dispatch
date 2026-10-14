@@ -17,7 +17,7 @@ from email.utils import parsedate_to_datetime
 import urllib.error
 import urllib.request
 
-from . import logins, runs
+from . import logins, plane_apps, runs
 from .redact import scrub, warn
 
 _identity_lock = threading.Lock()
@@ -85,23 +85,43 @@ def state_id(issue):
 
 
 class Plane:
-    def __init__(self, base_url, workspace_slug, token, name="Plane login"):
+    """A Plane login: a personal API token, or a Plane app (bot) given as bot."""
+
+    def __init__(self, base_url, workspace_slug, token, name="Plane login", *, bot=None):
         self.name = name
-        self.login_key = "plane:" + logins.fingerprint(base_url + token)
+        self.origin = base_url
+        self.bot = bot
+        identity = plane_apps.identity(base_url, bot) if bot else logins.fingerprint(base_url + token)
+        self.login_key = "plane:" + identity
         self.api = f"{base_url.rstrip('/')}/api/v1"
         self.base = f"{base_url.rstrip('/')}/api/v1/workspaces/{workspace_slug}"
         self.v2_base = f"{base_url.rstrip('/')}/api/v2/workspaces/{workspace_slug}"
-        self.token = token
+        self.token = None if bot else token
+
+    def _bot_token(self, stale=None):
+        try:
+            return plane_apps.token(self.origin, self.bot, stale=stale)
+        except plane_apps.BotLoginError as e:
+            # Plane answers a bad client, secret or installation with 400 or 401.
+            if e.status in (400, 401, 403):
+                logins.login(self.login_key, self.name, f"Plane app token request (HTTP {e.status})", True)
+            # Keeps a network failure as the cause, so doctor can tell it from a rejection.
+            raise PlaneError(str(e), status=e.status) from e.__cause__
+
+    def _build(self, method, url, data, bearer):
+        headers = {"Authorization": f"Bearer {bearer}"} if self.bot else {"X-API-Key": self.token}
+        headers["User-Agent"] = "dynamic-dispatch/1"
+        if data:
+            headers["Content-Type"] = "application/json"
+        return urllib.request.Request(url, data=data, headers=headers, method=method)
 
     def _request(self, method, path, payload=None, *, base=None):
         data = json.dumps(payload).encode() if payload is not None else None
-        headers = {"X-API-Key": self.token, "User-Agent": "dynamic-dispatch/1"}
-        if data:
-            headers["Content-Type"] = "application/json"
-        req = urllib.request.Request(
-            f"{self.base if base is None else base}{path}", data=data, headers=headers, method=method
-        )
-        for attempt in range(RATE_LIMIT_RETRIES + 1):
+        url = f"{self.base if base is None else base}{path}"
+        bearer = self._bot_token() if self.bot else None
+        req = self._build(method, url, data, bearer)
+        attempt, renewed = 0, False
+        while True:
             try:
                 with urllib.request.urlopen(req, timeout=30) as resp:
                     logins.login(self.login_key, self.name, f"Plane API {method}", False)
@@ -113,7 +133,14 @@ class Plane:
                     delay = _retry_delay(e.headers.get("Retry-After")) if e.code == 429 else None
                 # Longer waits would block checks; let the next poll try again.
                 if e.code == 429 and attempt < RATE_LIMIT_RETRIES and delay <= RATE_LIMIT_MAX_DELAY:
+                    attempt += 1
                     time.sleep(delay)
+                    continue
+                # A bot's token can lapse or be revoked early; one fresh token settles it.
+                if e.code == 401 and self.bot and not renewed:
+                    renewed = True
+                    bearer = self._bot_token(stale=bearer)
+                    req = self._build(method, url, data, bearer)
                     continue
                 if e.code in (401, 403):
                     logins.login(self.login_key, self.name, f"Plane API {method} (HTTP {e.code})", True)
@@ -397,14 +424,20 @@ def orchestrator(cfg):
     with _identity_lock:
         if _assignments is None:
             _assignments = _Assignments(cfg)
+    return orchestrator_login(cfg)
+
+
+def orchestrator_login(cfg):
+    """The Orchestrator's client, without starting assignment discovery, for setup and doctor."""
     p = cfg["plane"]
-    return Plane(api_url(p), p["workspace_slug"], p["orchestrator_token"], "Plane login for Orchestrator")
+    return Plane(api_url(p), p["workspace_slug"], p.get("orchestrator_token"), "Plane login for Orchestrator",
+                 bot=p.get("orchestrator_bot"))
 
 
 def as_agent(cfg, agent_cfg):
     p = cfg["plane"]
-    return Plane(api_url(p), p["workspace_slug"], agent_cfg["plane_token"],
-                 "Plane login for " + agent_cfg.get("display_name", "agent"))
+    return Plane(api_url(p), p["workspace_slug"], agent_cfg.get("plane_token"),
+                 "Plane login for " + agent_cfg.get("display_name", "agent"), bot=agent_cfg.get("plane_bot"))
 
 
 def assign_story(cfg, orch, project_id, issue_id, agent, run_id, start_date=None,

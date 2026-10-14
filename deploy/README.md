@@ -110,6 +110,8 @@ Run it again to change something: Enter keeps each current value. A changed
 `config.json` is first backed up beside it as `config.json.backup-*`, with
 mode 600, as `--add-project` does; the same answers change nothing. Agents
 already configured are kept, and other settings in the file are left alone.
+An identity that `config.json` gives a Plane app (see "Using Plane Cloud")
+keeps it: setup asks for no token and checks that the app signs in.
 
 It then offers to add the first project with `--add-project`, runs the
 doctor, and prints the command that starts DD. Finish the "Agent logins" and
@@ -177,7 +179,8 @@ Every value in capitals in the example is a placeholder. Replace each one:
   address, as in `https://plane.example.com/YOUR_WORKSPACE_SLUG/projects/...`.
 - `PLANE_ORCHESTRATOR_PAT`, `PLANE_CLAUDE_PAT` and `PLANE_CODEX_PAT`: an API
   token made in Plane's settings while signed in as the Orchestrator, Claude
-  and Codex accounts respectively.
+  and Codex accounts respectively. On Plane Cloud, any of them can be a Plane
+  app instead; see "Using Plane Cloud".
 - `GITHUB_FINE_GRAINED_PAT`: a fine-grained token made on GitHub under
   Settings, Developer settings, Personal access tokens, with access to the
   repository.
@@ -219,6 +222,96 @@ Every value in capitals in the example is a placeholder. Replace each one:
   or remove the section.
 
 Then check it loads, as described in "Adding a new setting".
+
+## Using Plane Cloud
+
+On Plane Cloud, the Orchestrator and each agent can be a Plane app (a bot)
+instead of a Plane user with its own email address and personal token. Each
+identity uses one or the other: a personal token, or an app. You can mix
+them, say an app for the Orchestrator and personal tokens for the agents.
+Identities that keep their personal tokens work exactly as before.
+
+Set the addresses first, as "Set up config.json" describes:
+`plane.base_url` is `https://app.plane.so` and `plane.api_url` is
+`https://api.plane.so`.
+
+### Create each app
+
+Make one app per identity: one for the Orchestrator and one for each agent
+that should be a bot, so the board shows who did what. Signed in to Plane as
+a workspace admin:
+
+1. Open the workspace settings, then Integrations, then Build your own.
+2. Give the app the identity's name, such as "Orchestrator" or "Claude".
+3. Set the Redirect URI to `http://localhost/`. Nothing needs to run there:
+   the browser only has to land on that address so you can read it.
+4. Leave Setup URL and Webhook URL empty. DD checks Plane on its own
+   schedule and needs no webhooks.
+5. For the Orchestrator's app only, turn on App Mentions.
+6. Save, and note the Client ID and Client Secret. Plane shows the secret
+   once; keep it only in `config.json`.
+
+### What each app may do
+
+The install link asks for these permissions, and no more:
+
+- The Orchestrator: `projects:read projects:write projects.members:read
+  projects.members:write projects.states:read projects.states:write
+  projects.labels:read projects.labels:write projects.cycles:read
+  projects.cycles:write projects.work_items:read projects.work_items:write
+  projects.work_items.comments:read projects.work_items.comments:write
+  profile:read`. It sets up projects, moves and assigns stories, plans
+  Cycles and posts DD's own comments.
+- An agent: `projects.work_items:read projects.work_items:write
+  projects.work_items.comments:write profile:read`. DD uses an agent's
+  login only to comment on its story, move it to In Review and look up its
+  own user ID.
+
+### Add it to config.json
+
+In place of the identity's personal token, give its app's settings. For
+the Orchestrator, replace `plane.orchestrator_token` with:
+
+    "orchestrator_bot": {
+      "client_id": "PLANE_ORCHESTRATOR_APP_CLIENT_ID",
+      "client_secret": "PLANE_ORCHESTRATOR_APP_CLIENT_SECRET",
+      "app_installation_id": "PLANE_ORCHESTRATOR_APP_INSTALLATION_ID"
+    }
+
+For an agent, replace its `plane_token` with `plane_bot`, with the same
+three entries from that agent's app. DD refuses to start if an identity has
+both a token and an app, or neither. Put the client ID and secret in now;
+the installation ID comes from installing the app, next.
+
+### Install it
+
+Plane's own Install button fails without a Setup URL, so DD prints the
+link instead. From the checkout, as DD's account:
+
+    python3 main.py --plane-install-link orchestrator
+    python3 main.py --plane-install-link claude-code
+
+Name `orchestrator`, or an agent by its name in `config.json`. The command
+reads only the app's client ID, never its secret. It prints the link, with
+the permissions above, and these steps:
+
+1. Open the link in a browser signed in to Plane as a workspace admin, and
+   approve the app.
+2. The browser lands on `http://localhost/?app_installation_id=...&code=...`.
+   The page itself won't load; that is expected. Copy the value after
+   `app_installation_id=` from the address bar, up to the next `&`.
+3. Put it in `config.json` as that identity's `app_installation_id`.
+
+If the app has a different Redirect URI, add
+`--redirect-uri` with exactly that address. An installed app is a member
+of the workspace's existing projects straight away. Then run
+`python3 main.py --doctor`: its Plane checks show whether each app signs in.
+
+DD gets each app's access token itself, keeps it in memory only and renews
+it before it runs out (about ten hours on Plane Cloud), and once more if
+Plane rejects it. A rejected app login sends the usual Plane login alert,
+naming the identity. Client secrets and access tokens are scrubbed from
+everything DD stores, logs or posts, like other secrets.
 
 ## Add a project
 
@@ -756,7 +849,8 @@ gives no reset time, so the cool-down lasts `usage_limit_cooldown_minutes`.
 - The Plane tokens for Orchestrator, Claude ("dispatch-claude-code-pi4")
   and Codex ("dispatch-codex-pi4") each live in
   `$DD_CHECKOUT/config.json`. They expire as set when they were
-  created.
+  created. A Plane app's client secret lives there too; DD renews the app's
+  access token itself and never saves it.
 
 Never paste `config.json`, `~/.git-credentials`, env files or tokens
 anywhere. Keep login files and private keys private too; these notes record
@@ -890,7 +984,7 @@ settings produce one startup warning and disable alerts.
 ### Login health alerts
 
 The same optional Bark settings also enable sound alerts for rejected Plane
-logins (Orchestrator or agent), GitHub API/App logins, Git push authentication,
+logins (Orchestrator or agent, by token or Plane app), GitHub API/App logins, Git push authentication,
 and Claude, Codex and Gemini logins. Alerts name the login and where DD noticed the failure,
 without copying credentials or error output. They work even when Plane is
 unavailable. Each login alerts once until it succeeds and fails again; this

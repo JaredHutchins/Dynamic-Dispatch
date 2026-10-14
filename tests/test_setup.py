@@ -1,4 +1,5 @@
 """Guided setup, against fake Plane and GitHub replies, never shows or leaks an entered secret."""
+import base64
 import contextlib
 import getpass
 import io
@@ -27,7 +28,10 @@ BARK_KEY = 'fake-bark-encryption-key-32chars'
 SECRETS = (ORCH, CLAUDE, CODEX, WRONG, GH_TOKEN, GH_WRONG, INSTALLATION, DEVICE, BARK_KEY)
 PLANE = 'https://plane.example.com'
 APPROVER_ID = '0f1e2d3c-0000-4000-8000-000000000001'
-USERS = {ORCH: 'user-orchestrator', CLAUDE: 'user-claude', CODEX: 'user-codex'}
+ORCH_APP, CLAUDE_APP = 'fake-orchestrator-app-secret', 'fake-claude-app-secret'
+APPS = {ORCH_APP: 'fake-orchestrator-app-access', CLAUDE_APP: 'fake-claude-app-access'}
+USERS = {ORCH: 'user-orchestrator', CLAUDE: 'user-claude', CODEX: 'user-codex',
+         APPS[ORCH_APP]: 'user-orchestrator-app', APPS[CLAUDE_APP]: 'user-claude-app'}
 PERMISSIONS = {'contents': 'read', 'pull_requests': 'write', 'statuses': 'write'}
 
 
@@ -51,8 +55,15 @@ class Services:
 
     def __call__(self, request, timeout=None):
         url = request.full_url
+        if url == PLANE + '/auth/o/token/':
+            # A Plane app's token, for the client secret in its Basic login.
+            secret = base64.b64decode(request.get_header('Authorization').removeprefix('Basic ')).decode()
+            app = secret.partition(':')[2]
+            if app not in APPS:
+                raise self.refuse(url, 401, app)
+            return Response({'access_token': APPS[app], 'token_type': 'Bearer', 'expires_in': 36000})
         if url.startswith(PLANE):
-            token = request.get_header('X-api-key')
+            token = request.get_header('X-api-key') or request.get_header('Authorization').removeprefix('Bearer ')
             if token not in USERS:
                 raise self.refuse(url, 401, token)
             if url == PLANE + '/api/v1/users/me/':
@@ -206,6 +217,43 @@ class SetupTests(unittest.TestCase):
         self.assertFalse(any(secret in p for p in terminal.prompts for secret in SECRETS))
         doctor.assert_called_once()
         self.assert_no_secret_leaked()
+
+    def test_plane_apps_are_kept_and_checked(self):
+        self.run_setup(self.first_answers())
+        cfg = json.loads(self.path.read_text())
+        del cfg['plane']['orchestrator_token'], cfg['agents']['claude-code']['plane_token']
+        cfg['plane']['orchestrator_bot'] = {'client_id': 'orchestrator-app', 'client_secret': ORCH_APP,
+                                            'app_installation_id': 'orchestrator-install'}
+        cfg['agents']['claude-code']['plane_bot'] = {'client_id': 'claude-app', 'client_secret': CLAUDE_APP,
+                                                     'app_installation_id': 'claude-install'}
+        self.path.write_text(json.dumps(cfg))
+        original = self.path.read_bytes()
+        # No Plane token is asked for the Orchestrator or Claude.
+        result, terminal, _, _ = self.run_setup([''] * 19)
+        self.assertEqual(result, 0)
+        self.assertEqual(self.path.read_bytes(), original)
+        self.assertFalse(any("Orchestrator's Plane API token" in p or "Claude's Plane API token" in p
+                             for p in terminal.prompts))
+        self.assertTrue(any("Codex's Plane API token" in p for p in terminal.prompts))
+        out = self.output.getvalue()
+        for secret in (ORCH_APP, CLAUDE_APP, *APPS.values()):
+            self.assertNotIn(secret, out)
+        self.assert_no_secret_leaked()
+
+    def test_a_rejected_plane_app_stops_setup_without_its_secret(self):
+        self.run_setup(self.first_answers())
+        cfg = json.loads(self.path.read_text())
+        del cfg['agents']['claude-code']['plane_token']
+        cfg['agents']['claude-code']['plane_bot'] = {'client_id': 'claude-app', 'client_secret': 'fake-wrong-app-secret',
+                                                     'app_installation_id': 'claude-install'}
+        self.path.write_text(json.dumps(cfg))
+        original = self.path.read_bytes()
+        result, _, _, _ = self.run_setup([''] * 10)
+        self.assertEqual(result, 1)
+        self.assertEqual(self.path.read_bytes(), original)
+        out = self.output.getvalue()
+        self.assertIn("Setup stopped: Claude's Plane app (plane_bot) was rejected", out)
+        self.assertNotIn('fake-wrong-app-secret', out)
 
     def test_a_change_keeps_the_original_as_a_private_backup(self):
         self.run_setup(self.first_answers())
