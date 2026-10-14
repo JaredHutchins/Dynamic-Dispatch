@@ -168,6 +168,11 @@ Every value in capitals in the example is a placeholder. Replace each one:
 - `YOUR_USER` in `db_path` and `private_key_path`: the Pi account DD runs as.
 - `https://plane.example.com` in `plane.base_url`: the address you open
   Plane at in a browser, without a trailing path.
+- Optional `plane.api_url`: a separate API address; omit it to use `plane.base_url`
+  for both requests and web links. For Plane Cloud, set `plane.base_url` to
+  `https://app.plane.so` and `plane.api_url` to `https://api.plane.so` in the
+  config file. Web links always use `plane.base_url`. Cloud account login setup
+  is separate from this API configuration.
 - `YOUR_WORKSPACE_SLUG`: the first part of the path in any Plane page's
   address, as in `https://plane.example.com/YOUR_WORKSPACE_SLUG/projects/...`.
 - `PLANE_ORCHESTRATOR_PAT`, `PLANE_CLAUDE_PAT` and `PLANE_CODEX_PAT`: an API

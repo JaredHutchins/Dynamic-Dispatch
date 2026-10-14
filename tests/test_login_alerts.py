@@ -40,6 +40,10 @@ class LoginAlerts(unittest.TestCase):
 
     def assert_cycle(self, call, failure, success, exception):
         for outcome in (failure, failure, success, failure):
+            if isinstance(outcome, urllib.error.HTTPError):
+                outcome = urllib.error.HTTPError(outcome.url, outcome.code, outcome.msg,
+                                                 outcome.headers, io.BytesIO())
+                self.addCleanup(outcome.close)
             with mock.patch('urllib.request.urlopen', side_effect=outcome if isinstance(outcome, Exception) else None,
                             return_value=outcome):
                 if isinstance(outcome, Exception):

@@ -95,6 +95,15 @@ class SetupTests(unittest.TestCase):
             self.assertNotIn(secret, text)
         return result, text
 
+    def test_add_project_uses_separate_api_address(self):
+        self.cfg['plane']['api_url'] = 'https://api.plane.so'
+        self.cfg['plane']['base_url'] = 'https://app.plane.so'
+        self.path.write_text(json.dumps(self.cfg))
+        self.assertEqual(self.run_setup()[0], 0)
+        self.mocks['plane.Plane'].assert_called_once_with(
+            'https://api.plane.so', 'test', 'fake-secret-plane')
+        self.assertEqual(config.load(self.path)['plane']['base_url'], 'https://app.plane.so')
+
     def test_all_steps_and_repeat(self):
         original = self.path.read_bytes()
         self.assertEqual(self.run_setup()[0], 0)

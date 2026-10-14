@@ -146,7 +146,7 @@ def run(path=None, *, project=None):
 def _check_plane(cfg, check, require):
     def client(token):
         p = cfg['plane']
-        return plane.Plane(p['base_url'], p['workspace_slug'], token)
+        return plane.Plane(plane.api_url(p), p['workspace_slug'], token)
 
     def orchestrator():
         connection = client(cfg['plane']['orchestrator_token'])

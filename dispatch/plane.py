@@ -12,6 +12,8 @@ import http.client
 import json
 import re
 import threading
+import time
+from email.utils import parsedate_to_datetime
 import urllib.error
 import urllib.request
 
@@ -20,6 +22,10 @@ from .redact import scrub, warn
 
 _identity_lock = threading.Lock()
 _assignments = None
+
+RATE_LIMIT_RETRIES = 3
+RATE_LIMIT_DELAY = 5
+RATE_LIMIT_MAX_DELAY = 60
 
 COMMENT_LIMIT = 20000  # characters
 
@@ -40,6 +46,21 @@ def work_item_url(cfg, project_id, issue_id):
     """The work item's page in Plane's web app."""
     p = cfg["plane"]
     return f"{p['base_url'].rstrip('/')}/{p['workspace_slug']}/projects/{project_id}/issues/{issue_id}"
+
+
+def api_url(plane_cfg):
+    """The API origin, falling back to the existing shared web/API address."""
+    return plane_cfg.get("api_url", plane_cfg["base_url"])
+
+
+def _retry_delay(value):
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        try:
+            return max(0, parsedate_to_datetime(value).timestamp() - time.time())
+        except (TypeError, ValueError, OverflowError):
+            return RATE_LIMIT_DELAY
 
 
 def _description_html(text):
@@ -69,28 +90,36 @@ class Plane:
         self.login_key = "plane:" + logins.fingerprint(base_url + token)
         self.api = f"{base_url.rstrip('/')}/api/v1"
         self.base = f"{base_url.rstrip('/')}/api/v1/workspaces/{workspace_slug}"
+        self.v2_base = f"{base_url.rstrip('/')}/api/v2/workspaces/{workspace_slug}"
         self.token = token
 
     def _request(self, method, path, payload=None, *, base=None):
         data = json.dumps(payload).encode() if payload is not None else None
-        headers = {"X-API-Key": self.token}
+        headers = {"X-API-Key": self.token, "User-Agent": "dynamic-dispatch/1"}
         if data:
             headers["Content-Type"] = "application/json"
         req = urllib.request.Request(
             f"{self.base if base is None else base}{path}", data=data, headers=headers, method=method
         )
-        try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                logins.login(self.login_key, self.name, f"Plane API {method}", False)
-                body = resp.read()
-                return json.loads(body) if body else {}
-        except urllib.error.HTTPError as e:
-            if e.code in (401, 403):
-                logins.login(self.login_key, self.name, f"Plane API {method} (HTTP {e.code})", True)
-            detail = e.read().decode(errors="replace")[:500]
-            raise PlaneError(scrub(f"{method} {path} -> {e.code}: {detail}"), status=e.code) from None
-        except urllib.error.URLError as e:
-            raise PlaneError(scrub(f"{method} {path} -> {e.reason}")) from e
+        for attempt in range(RATE_LIMIT_RETRIES + 1):
+            try:
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    logins.login(self.login_key, self.name, f"Plane API {method}", False)
+                    body = resp.read()
+                    return json.loads(body) if body else {}
+            except urllib.error.HTTPError as e:
+                with e:
+                    detail = e.read().decode(errors="replace")[:500]
+                    delay = _retry_delay(e.headers.get("Retry-After")) if e.code == 429 else None
+                # Longer waits would block checks; let the next poll try again.
+                if e.code == 429 and attempt < RATE_LIMIT_RETRIES and delay <= RATE_LIMIT_MAX_DELAY:
+                    time.sleep(delay)
+                    continue
+                if e.code in (401, 403):
+                    logins.login(self.login_key, self.name, f"Plane API {method} (HTTP {e.code})", True)
+                raise PlaneError(scrub(f"{method} {path} -> {e.code}: {detail}"), status=e.code) from None
+            except urllib.error.URLError as e:
+                raise PlaneError(scrub(f"{method} {path} -> {e.reason}")) from e
 
     def get(self, path):
         return self._request("GET", path)
@@ -145,7 +174,16 @@ class Plane:
         return list(self._all_pages("/projects/"))
 
     def add_member(self, project_id, user_id, role=20):
-        return self.post(f"/projects/{project_id}/members/", {"member": user_id, "role": role})
+        path = f"/projects/{project_id}/members/"
+        try:
+            return self.post(path, {"member": user_id, "role": role})
+        except PlaneError as e:
+            # Cloud's v1 endpoint expects invitation fields instead of a member ID.
+            refusal = "Expected email, display_name, workspace_slug, project_id, one or more of the fields are missing."
+            roles = {20: "admin", 15: "contributor", 5: "guest"}
+            if e.status != 400 or refusal not in str(e) or role not in roles:
+                raise
+        return self._request("POST", path, {"member_id": user_id, "role": roles[role]}, base=self.v2_base)
 
     def states(self, project_id):
         return list(self._all_pages(f"/projects/{project_id}/states/"))
@@ -357,12 +395,12 @@ def orchestrator(cfg):
         if _assignments is None:
             _assignments = _Assignments(cfg)
     p = cfg["plane"]
-    return Plane(p["base_url"], p["workspace_slug"], p["orchestrator_token"], "Plane login for Orchestrator")
+    return Plane(api_url(p), p["workspace_slug"], p["orchestrator_token"], "Plane login for Orchestrator")
 
 
 def as_agent(cfg, agent_cfg):
     p = cfg["plane"]
-    return Plane(p["base_url"], p["workspace_slug"], agent_cfg["plane_token"],
+    return Plane(api_url(p), p["workspace_slug"], agent_cfg["plane_token"],
                  "Plane login for " + agent_cfg.get("display_name", "agent"))
 
 
