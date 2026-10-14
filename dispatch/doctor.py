@@ -25,7 +25,8 @@ LAUNCHER = '/usr/local/bin/dd-agent-run'
 COMMAND_TIMEOUT = 30
 
 
-def _service_reason(error, service, credential, fallback):
+def service_reason(error, service, credential, fallback):
+    """Why a service call failed, from its status and cause alone, never its message."""
     status = getattr(error, 'status', None)
     if status in (401, 403):
         return f"{credential} was rejected; check its validity and access permissions."
@@ -91,7 +92,7 @@ def run(path=None, *, project=None):
         try:
             value = action()
         except Exception as error:
-            report('FAIL', name, _service_reason(error, service, credential, bad) if service else bad)
+            report('FAIL', name, service_reason(error, service, credential, bad) if service else bad)
             return None
         report('OK', name, good)
         return value

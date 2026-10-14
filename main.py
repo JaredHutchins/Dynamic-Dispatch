@@ -21,7 +21,7 @@ from datetime import datetime
 from pathlib import Path
 
 from dispatch import (add_project, alerts, choose, cleanup, config, cycles, doctor, github, gitops, lights, mainhealth, plane, proc, redact,
-                      runs, selfupdate, sprint, stories, sync, worker)
+                      runs, selfupdate, setup, sprint, stories, sync, worker)
 from dispatch.redact import log, warn
 from dispatch.stories import story_ref
 
@@ -520,7 +520,10 @@ def main():
     parser.add_argument("--once", action="store_true", help="Run a single cycle and exit")
     parser.add_argument("--doctor", action="store_true", help="Check setup without changing it")
     parser.add_argument("--add-project", action="store_true", help="Set up a project for DD")
+    parser.add_argument("--setup", action="store_true", help="Write config.json by answering questions")
     args = parser.parse_args()
+    if args.setup:
+        return setup.run(args.config)
     if args.add_project:
         return add_project.run(args.config)
     if args.doctor:

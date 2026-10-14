@@ -39,6 +39,18 @@ merge it. It is not a hosted service, and it does not replace code review.
   and the [Bark app](https://github.com/Finb/Bark) (iPhone and iPad) for
   encrypted phone alerts.
 
+To set it up, first run the [installer](deploy/README.md#recommended-system-setup),
+then run this as DD's account from the checkout:
+
+    python3 main.py --setup
+
+It asks for the Plane address and workspace, the Orchestrator's token, the
+GitHub App's details (or a plain token), the approver, each agent's Plane
+token and commit name and email, and optional phone alerts. It checks each
+answer as it goes, types secrets hidden, and writes `config.json` readable only
+by DD's account. Then it offers to add the first project, runs the doctor and
+prints the command that starts DD. Agent logins are a separate step (below).
+
 ### Agent logins
 
 DD has been tested with Claude Code and Codex signed in with personal

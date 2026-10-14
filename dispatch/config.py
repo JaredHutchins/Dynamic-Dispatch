@@ -300,28 +300,43 @@ def check_groups(cfg):
 
 def save_project(path, name, project, original):
     """Validate privately, retain an exact private backup, then atomically replace."""
-    path = Path(path)
-    if path.read_bytes() != original:
-        raise ConfigError("Config changed during setup; run setup again")
-    _require_private(path)
-    mode = stat.S_IMODE(path.stat().st_mode)
     cfg = json.loads(original)
     cfg["projects"][name] = project
+    save(path, cfg, original)
+
+
+def save(path, cfg, original=None):
+    """Save cfg over the file whose bytes were original, or as a new file when original is None.
+
+    Validates a private candidate, keeps the original as a private backup, then
+    replaces atomically. Saving what a private file already holds writes nothing,
+    so repeating setup leaves no new backups. Refuses if the file changed meanwhile.
+    """
+    path = Path(path)
+    def unchanged():
+        return path.read_bytes() == original if original is not None else not path.exists()
+    if not unchanged():
+        raise ConfigError("Config changed during setup; run setup again")
+    if original is not None:
+        _require_private(path)
+        if json.loads(original) == cfg and stat.S_IMODE(path.stat().st_mode) == 0o600:
+            return
     candidate = None
     try:
         with tempfile.NamedTemporaryFile(dir=path.parent, prefix=".dd-config-", delete=False) as f:
             candidate = Path(f.name)
-            os.fchmod(f.fileno(), mode)
+            os.fchmod(f.fileno(), 0o600)
             f.write((json.dumps(cfg, indent=2) + "\n").encode())
             f.flush()
             os.fsync(f.fileno())
-        load(candidate)
-        with tempfile.NamedTemporaryFile(dir=path.parent, prefix=path.name + ".backup-", delete=False) as f:
-            os.fchmod(f.fileno(), mode)
-            f.write(original)
-            f.flush()
-            os.fsync(f.fileno())
-        if path.read_bytes() != original:
+        load(candidate, allow_empty_projects=True)
+        if original is not None:
+            with tempfile.NamedTemporaryFile(dir=path.parent, prefix=path.name + ".backup-", delete=False) as f:
+                os.fchmod(f.fileno(), 0o600)
+                f.write(original)
+                f.flush()
+                os.fsync(f.fileno())
+        if not unchanged():
             raise ConfigError("Config changed during setup; run setup again")
         os.replace(candidate, path)
     finally:

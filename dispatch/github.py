@@ -112,6 +112,12 @@ def token(github_cfg):
         return _token(github_cfg)
 
 
+def forget_token(github_cfg):
+    """Drop a cached installation token, so the next one reports the App's current permissions."""
+    with _token_lock:
+        _installation_tokens.pop(tuple(str(github_cfg[k]) for k in APP_KEYS), None)
+
+
 def _token(github_cfg):
     """The token to open and look up pull requests with.
 
@@ -363,3 +369,13 @@ def repository(repo, credential):
     """Read repository access, including push permission when GitHub reports it."""
     path = "/".join(urllib.parse.quote(part, safe="") for part in repo.split("/"))
     return _request("GET", f"/repos/{path}", credential)
+
+
+def current_user(credential):
+    """The account a personal token belongs to; fails if GitHub rejects the token."""
+    return _request("GET", "/user", credential)
+
+
+def user(login, credential):
+    """A GitHub account by its login; fails with status 404 if there is none."""
+    return _request("GET", "/users/" + urllib.parse.quote(login, safe=""), credential)

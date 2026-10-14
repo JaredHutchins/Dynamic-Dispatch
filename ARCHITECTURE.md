@@ -507,7 +507,26 @@ Env files can't be owned by `ddwork` any more: every agent is in it, and DD refu
 
 `python3 main.py --doctor` (`dispatch/doctor.py`) checks this setup without changing it: config, Plane and GitHub access, Git, each agent's account, env file and command, the services, the rollback helper, the launcher and the sudo rules. The sandbox checks in `dispatch/doctor_sandbox.py` inspect metadata only: agent access to config and the App key, write access throughout DD’s checkout, administrator groups, and story folder groups and mode 2770. ACLs, symlinks and unavailable metadata produce WARN instead of an isolation claim; failed account checks skip dependent checks. Folder ownership is compared with project agent groups; with several possible groups, assignment to the individual story needs manual verification and produces WARN. These checks never run as an agent or alter permissions. Each check reports OK, WARN, FAIL or SKIP, never config values or exception text. `deploy/README.md` lists what it checks.
 
-### Project onboarding
+### Setup and project onboarding
+
+`python3 main.py --setup` (`dispatch/setup.py`) writes `config.json` from
+answers, after the installer has made the accounts and folders. Each answer is
+checked as it is given, with the same Plane and GitHub clients DD uses, and a
+failure is explained with doctor's reasons (rejected, not found, unreachable),
+never the reply's text, which can echo the credential. Secrets are read with
+`getpass`; its fallback that echoes input without a terminal is refused, so
+setup stops instead. An existing file's own contents are the current values,
+not the defaults loading adds, and a value kept with Enter keeps its saved
+form, so the same answers save nothing. Agents come from the installer's
+names, and setup only adds them: removing one could orphan a project's agent
+list. The App's private key stays in its own file; setup records its path.
+An App without contents read, pull requests write and commit statuses write
+is refused like a rejected login, and its cached installation token is
+dropped so the next answer is checked against the permissions GitHub reports
+then. It ends by offering `--add-project`, running doctor and printing the
+start command; it never starts DD. If `--add-project` fails without adding a
+project, setup stops there with a failure, keeping the saved config, so
+neither doctor nor the start command suggests setup finished.
 
 `python3 main.py --add-project` coordinates onboarding in `dispatch/add_project.py`.
 GitHub repository creation and access grants remain manual prerequisites. Setup
@@ -518,8 +537,8 @@ partial failure uses the same discovery rather than an events-table checkpoint.
 Git cloning stays behind `gitops`; completed clones take the projects folder's
 group without group write, as the paths table requires, and are published from
 temporary folders. An empty repository stops setup, since it has no base branch.
-Config replacement stays behind `config`: validate a private candidate,
-retain an exact backup with matching permissions, then replace atomically. Settings
+Config replacement stays behind `config.save`, which both commands use: validate a
+private candidate, retain an exact backup with mode 600, then replace atomically. Settings
 are merged over the file's own contents, not the defaults loading adds, and an
 unchanged project is not saved again.
 Doctor checks the saved project before the maintainer restarts DD. Test dependencies
