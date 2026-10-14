@@ -82,7 +82,8 @@ class Estimate(unittest.TestCase):
 
     def test_no_history_says_so(self):
         est = plan_report.estimate(self.merged(), [], 2, '2026-10-14', NOW)
-        self.assertEqual(est, {'based_on': 0, 'agents': 2, 'end_date': '2026-10-14'})
+        self.assertEqual(est, {'based_on': 0, 'agents': 2, 'end_date': '2026-10-14',
+                               'fallback_sizes': ['S', 'M', 'L']})
         text = plan_report.render(self.merged(), est, {}, 1)
         self.assertIn("no Done stories to estimate from yet", text)
         self.assertNotIn('Stories to push', text)
@@ -355,6 +356,75 @@ class History(unittest.TestCase):
         self.assertEqual(len(durations), plan_report.HISTORY)
         self.assertAlmostEqual(min(durations) / HOUR, 1, delta=0.1)
         self.assertEqual(runs.done_durations(self.conn, 'other', plan_report.HISTORY), [])
+
+    def record_history(self, sizes, hours):
+        ids = [f'h{n}' for n in range(len(sizes))]
+        snapshot = runs.save_assessment_snapshot(
+            self.conn, 'p', 'old-cycle', 'plan', 'rev',
+            [{'id': sid, 'name': sid, 'description': ''} for sid in ids], None, ['alpha', 'beta'])
+        merged = {'stories': {sid: {'sizes': {'alpha': 'S', 'beta': size}}
+                              for sid, size in zip(ids, sizes)}}
+        runs.save_plan_report(self.conn, snapshot['id'], {'merged': merged}, 'Historical plan')
+        for sid, duration in zip(ids, hours):
+            first = runs.enqueue(self.conn, project='p', issue={'id': sid, 'name': sid},
+                                 agent='alpha', branch=sid)
+            runs.enqueue(self.conn, project='p', issue={'id': sid, 'name': sid},
+                         agent='beta', branch=sid + '-retry')
+            with self.conn:
+                self.conn.execute('UPDATE runs SET claimed_at = ? WHERE id = ?',
+                                  ((NOW - timedelta(hours=duration)).isoformat(), first))
+            with patch('dispatch.runs.plan_reports.now', return_value=NOW.isoformat()):
+                runs.record_done_story(self.conn, 'p', sid)
+        return runs.done_durations(self.conn, 'p', plan_report.HISTORY, with_sizes=True)
+
+    def test_recorded_history_missing_sizes_and_disagreement(self):
+        history = self.record_history('LLL', [24, 48, 96])
+        self.assertEqual({row['size'] for row in history}, {'L'})
+        merged = Estimate().merged(sizes='SML')
+        est = plan_report.estimate(merged, history, 3, '2026-10-10', NOW)
+        self.assertEqual(est['fallback_sizes'], ['S', 'M'])
+        self.assertEqual(est['days'], 2)
+        self.assertEqual(est['slow']['days'], 4)
+        self.assertTrue(est['fits'])
+        self.assertFalse(est['slow']['fits'])
+        self.assertEqual(est['slow']['finish'], '2026-10-11')
+        self.assertIn('Too little size history: S, M.', plan_report.render(merged, est, {}, 1))
+
+    def test_all_sizes_learned_and_larger_current_size_used(self):
+        history = self.record_history('SSSMMMLLL', [1, 2, 3, 10, 20, 30, 100, 200, 300])
+        merged = Estimate().merged(sizes='SML', depends={'b': ['a'], 'c': ['b']})
+        merged['stories']['a']['sizes']['beta'] = 'L'
+        est = plan_report.estimate(merged, history, 3, None, NOW)
+        self.assertEqual(est['fallback_sizes'], [])
+        self.assertEqual(est['days'], round(420 / 24, 1))
+        self.assertEqual(est['slow']['days'], round(630 / 24, 1))
+        self.assertIsNone(est['fits'])
+        self.assertIsNone(est['slow']['fits'])
+
+    def test_two_samples_still_use_weighting(self):
+        history = self.record_history('LL', [24, 48])
+        est = plan_report.estimate(Estimate().merged(sizes='LLL'), history, 3, None, NOW)
+        self.assertEqual(est['fallback_sizes'], ['S', 'M', 'L'])
+        self.assertEqual(est['days'], 3)
+        self.assertEqual(est['slow']['days'], 4)
+
+    def test_recorded_history_overlaps_serialize_without_changing_order(self):
+        history = self.record_history('MMM', [24, 24, 24])
+        merged = plan_report.merge(STORIES, {'alpha': answer(
+            [story('a', overlaps=['b', 'c']), story('b', overlaps=['c']), story('c')], list('abc'))})
+        est = plan_report.estimate(merged, history, 3, '2026-10-09', NOW)
+        self.assertEqual(est['days'], 3)
+        self.assertEqual(est['slow']['days'], 3)
+        self.assertFalse(est['fits'])
+        self.assertEqual(merged['order'], list('abc'))
+        self.assertTrue(all(not row['depends_on'] for row in merged['stories'].values()))
+
+    def test_empty_recorded_history_has_no_invented_finish(self):
+        history = runs.done_durations(self.conn, 'p', plan_report.HISTORY, with_sizes=True)
+        est = plan_report.estimate(Estimate().merged(), history, 2, '2026-10-14', NOW)
+        text = plan_report.fit_lines(est)[0]
+        self.assertIn('Likely and slow figures, finish dates and fit are unknown', text)
+        self.assertIn('Too little size history: S, M, L', text)
 
     def test_existing_database_seeds_history_from_merges_once(self):
         path = Path(self.temp.name) / 'runs.db'
