@@ -574,14 +574,29 @@ sprint-pull off. To switch it on for a project:
      Plane user ID: the `id` next to the approver's name in the same
      request with `members/` in place of `states/`. Any project with a
      `cycles` section needs it.
-   - `done` under the project's `states`, set to the Done state's `id`.
+   - `done` and `cancelled` under the project's `states`, set to the Done
+     and Cancelled states' IDs.
    - `max_stories` (default 10), `replan_quiet_minutes` (default 15) and
      `blocked_reminder_minutes` (default 60) can be left out to use their
      defaults.
 3. Run the doctor, `python3 main.py --doctor` (see "Check the setup"). It
    checks the two backlog states, the label, the approver's project
-   membership and `done`. Fix anything it reports before going on.
+   membership and `done`/`cancelled`. Fix anything it reports before going on.
 4. Restart DD as in "Start, stop, restart".
+
+Done and Cancelled stories both finish their part of a Cycle and release holds on
+other work. Only Done satisfies a dependency: dependents of a Cancelled story
+stay unstarted and are carried over at the end date.
+
+DD shortens an approved Cycle once every story is finished, no Cycle work is
+active, and its main check has passed on the current main after the final merge.
+Main must not be broken, and no Fix main story may remain open. Until then DD
+leaves dates alone and checks again each poll. The new end is the end of
+yesterday in DD's local time zone, allowing a new Cycle today. If the Cycle
+started today, it ends today instead, allowing the next one tomorrow. DD never
+changes start dates, unapproved Cycles, or dates that have already ended.
+A successful change sends one silent alert with the new date, remembered across
+restarts. A refused Plane update records a warning and is retried later.
 
 To switch it off again, remove the project's `cycles` section and restart.
 

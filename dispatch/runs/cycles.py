@@ -1,7 +1,9 @@
 """Durable Cycle membership used to reconcile board columns, end-of-Cycle carry-overs, and each Cycle's plan item."""
 
+import json
+
 from ..redact import scrub
-from .store import now
+from .store import ACTIVE, now
 from .plan_decisions import save_plan_approval
 
 # A plan item's status. New until it is in its Cycle and has asked for stories.
@@ -154,3 +156,36 @@ def complete_cycle(conn, project, cycle_id):
     if plan is not None and plan["status"] == PLAN_APPROVED and not unfinished_carry_overs(conn, project, cycle_id):
         set_plan_status(conn, project, cycle_id, PLAN_COMPLETE)
         end_cycle_membership(conn, project, cycle_id)
+
+
+def early_cycle_end(conn, project, cycle_id):
+    return conn.execute("SELECT * FROM early_cycle_ends WHERE project = ? AND cycle_id = ?",
+                        (project, cycle_id)).fetchone()
+
+
+def save_early_cycle_end(conn, project, cycle_id, end_date):
+    with conn:
+        conn.execute("INSERT INTO early_cycle_ends (project, cycle_id, end_date) VALUES (?, ?, ?) "
+                     "ON CONFLICT(project, cycle_id) DO UPDATE SET end_date = excluded.end_date",
+                     (project, cycle_id, end_date))
+
+
+def claim_early_cycle_alert(conn, project, cycle_id):
+    with conn:
+        return conn.execute("UPDATE early_cycle_ends SET alerted = 1 WHERE project = ? AND cycle_id = ? "
+                            "AND alerted = 0", (project, cycle_id)).rowcount == 1
+
+
+def cycle_work_active(conn, project, cycle_id, members):
+    """Include active outcomes, assessments and workers still holding their slot during cleanup."""
+    ids = set(members) | cycle_members(conn, project, cycle_id)
+    approvals = conn.execute("SELECT members FROM plan_approvals WHERE project = ? AND cycle_id = ?",
+                             (project, cycle_id))
+    for approval in approvals:
+        ids.update(json.loads(approval['members']))
+    rows = conn.execute("SELECT r.issue_id, r.status, s.run_id, a.cycle_id FROM runs r "
+                        "LEFT JOIN agent_slots s ON s.run_id = r.id "
+                        "LEFT JOIN assessments x ON x.run_id = r.id "
+                        "LEFT JOIN assessment_snapshots a ON a.id = x.snapshot_id WHERE r.project = ?", (project,))
+    return any((row['issue_id'] in ids or row['cycle_id'] == cycle_id)
+               and (row['status'] in ACTIVE or row['run_id'] is not None) for row in rows)

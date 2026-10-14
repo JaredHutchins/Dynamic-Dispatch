@@ -228,6 +228,9 @@ class Plane:
                  "end_date": c.get("end_date")}
                 for c in self._all_pages(f"/projects/{project_id}/cycles/")]
 
+    def set_cycle_end(self, project_id, cycle_id, end_date):
+        return self.patch(f"/projects/{project_id}/cycles/{cycle_id}/", {"end_date": end_date})
+
     def get_cycle(self, project_id, cycle_id):
         """Read one Cycle, including its description and dates."""
         return self.get(f"/projects/{project_id}/cycles/{cycle_id}/")

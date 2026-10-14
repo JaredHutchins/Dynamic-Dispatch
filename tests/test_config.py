@@ -72,6 +72,15 @@ class Config(unittest.TestCase):
         del c["projects"]["dynamic-dispatch"]["states"]["done"]
         self.assertNotIn("done", config.load(self.write(c))["projects"]["dynamic-dispatch"]["states"])
 
+    def test_cancelled_state_is_optional_but_validated(self):
+        c = self.base()
+        for invalid in ('', ' ', 7, []):
+            c['projects']['dynamic-dispatch']['states']['cancelled'] = invalid
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(config.ConfigError, 'states cancelled must'):
+                config.load(self.write(c))
+        del c['projects']['dynamic-dispatch']['states']['cancelled']
+        config.load(self.write(c))
+
     def test_sprint_pull_is_optional(self):
         c = self.base()
         del c["projects"]["dynamic-dispatch"]["cycles"]

@@ -4,7 +4,7 @@ from datetime import datetime
 import http.client
 import json
 
-from . import alerts, choose, cycle_dates, mainhealth, plane, runs, stories, sync
+from . import alerts, choose, cycle_dates, github, mainhealth, plane, runs, stories, sync
 
 
 PLANE_ERRORS = (plane.PlaneError, OSError, ValueError, http.client.HTTPException)
@@ -26,6 +26,11 @@ def poll(cfg, conn):
         except PLANE_ERRORS as exc:
             runs.record_event(conn, None, 'warning',
                               f'Could not check Blocked Cycle stories; retrying next poll: {exc}', project=name)
+        try:
+            finish_early(cfg, conn, client, name, project, cycle_list)
+        except PLANE_ERRORS + (github.GitHubError,) as exc:
+            runs.record_event(conn, None, 'warning', f'Could not end Cycle early; retrying next poll: {exc}',
+                              project=name)
         if mainhealth.stopped(conn, name):
             continue
         try:
@@ -112,10 +117,10 @@ def approved_cycles(conn, client, name, project, cycle_list=None):
 
 
 def active_cycle(conn, client, name, project, skip=(), cycle_list=None):
-    """The approved, started Cycle with a story not yet Done, or None, passing over the Cycle IDs in skip.
+    """The approved, started Cycle with a story not yet Done or Cancelled, or None, passing over the Cycle IDs in skip.
 
-    Its 'members' are its stories' IDs and 'open' the stories not yet Done. An overrunning
-    Cycle stays active after its end date until its last story is Done.
+    Its 'members' are its stories' IDs and 'open' the stories not yet Done or Cancelled. An overrunning
+    Cycle stays active after its end date until its last story is Done or Cancelled.
     """
     if not project.get('cycles'):
         return None
@@ -124,7 +129,7 @@ def active_cycle(conn, client, name, project, skip=(), cycle_list=None):
             continue
         members = {issue['id']: issue for issue in client.cycle_issues(project['plane_project_id'], cycle['id'])
                    if not runs.is_plan_item(conn, issue['id'])}
-        unfinished = [issue for issue in members.values() if plane.state_id(issue) != project['states']['done']]
+        unfinished = [issue for issue in members.values() if not finished(project, issue)]
         if unfinished:
             return dict(cycle, members=set(members), open=unfinished)
         if cycle_dates.moment(cycle['end_date'], end=True) < datetime.now().astimezone():
@@ -181,7 +186,7 @@ def remind_blocked(cfg, conn, client, name, project, cycle_list=None):
         members = [issue for issue in client.cycle_issues(project['plane_project_id'], cycle['id'])
                    if not runs.is_plan_item(conn, issue['id'])]
         if (cycle_dates.moment(cycle['end_date'], end=True) < datetime.now().astimezone()
-                and all(plane.state_id(issue) == project['states']['done'] for issue in members)):
+                and all(finished(project, issue) for issue in members)):
             runs.complete_cycle(conn, name, cycle['id'])
         for issue in members:
             if plane.state_id(issue) == project['states']['blocked'] and not runs.is_plan_item(conn, issue['id']):
@@ -192,3 +197,61 @@ def remind_blocked(cfg, conn, client, name, project, cycle_list=None):
                                         sync.CYCLE_BLOCKED)
         if message is not None:
             alerts.blocked(cfg, name, issue_id, message)
+
+
+def finished(project, issue):
+    """Cancellation finishes Cycle work, but only Done satisfies a dependency."""
+    return plane.state_id(issue) in {value for key in ('done', 'cancelled')
+                                    if (value := project['states'].get(key))}
+
+
+def finish_early(cfg, conn, client, name, project, cycle_list):
+    """Shorten only approved, quiet Cycles on a freshly confirmed green main."""
+    now = datetime.now().astimezone()
+    pid = project['plane_project_id']
+    for cycle in cycle_list:
+        saved = runs.early_cycle_end(conn, name, cycle['id'])
+        if saved and saved['alerted']:
+            continue
+        # Recover a successful PATCH whose response or subsequent store write was lost.
+        if (saved and cycle.get('end_date')
+                and cycle_dates.moment(cycle['end_date'], end=True) == cycle_dates.moment(saved['end_date'])):
+            announce_early(cfg, conn, name, cycle, saved['end_date'])
+            continue
+        plan = runs.cycle_plan(conn, name, cycle['id'])
+        if (not plan or plan['status'] != runs.PLAN_APPROVED
+                or not cycle.get('start_date') or not cycle.get('end_date')
+                or not cycle_dates.moment(cycle['start_date']) <= now
+                <= cycle_dates.moment(cycle['end_date'], end=True)):
+            continue
+        members = client.cycle_issues(pid, cycle['id'])
+        stories = [issue for issue in members if not runs.is_plan_item(conn, issue['id'])]
+        if not all(finished(project, issue) for issue in stories):
+            continue
+        if runs.cycle_work_active(conn, name, cycle['id'], [issue['id'] for issue in members]):
+            continue
+        health = runs.main_health(conn, name)
+        if health is None or health['state'] != mainhealth.GREEN or mainhealth.stopped(conn, name):
+            continue
+        if any((issue['id'] == health['fix_issue_id'] or (issue.get('name') or '').startswith('Fix main:'))
+               and client.issue_is_open(pid, issue)
+               for issue in client.issues(pid)):
+            continue
+        # Read after the finished stories: a green result from before the final merge cannot qualify.
+        revision = github.main_revision(project['github_repo'], project.get('base_branch', 'main'),
+                                        github.token(cfg['github']))
+        if health['revision'] != revision:
+            continue
+        end = cycle_dates.early_end(cycle['start_date'], now)
+        if cycle_dates.moment(end) >= cycle_dates.moment(cycle['end_date'], end=True):
+            continue
+        runs.save_early_cycle_end(conn, name, cycle['id'], end)
+        client.set_cycle_end(pid, cycle['id'], end)
+        announce_early(cfg, conn, name, cycle, end)
+
+
+def announce_early(cfg, conn, name, cycle, end):
+    if runs.claim_early_cycle_alert(conn, name, cycle['id']):
+        alerts.send(cfg, name, None,
+                    f"Cycle {cycle.get('name') or cycle['id']} finished early; new end date: {cycle_dates.local_date(end)}.",
+                    suffix=' Cycle', level='passive')

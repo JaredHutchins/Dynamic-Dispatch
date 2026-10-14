@@ -1,6 +1,6 @@
 """Plane Cycle boundaries as exact moments, with local-day defaults for plain dates."""
 
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta, timezone
 
 
 def moment(value, *, end=False):
@@ -13,3 +13,9 @@ def moment(value, *, end=False):
 def local_date(value):
     """The date a Cycle boundary falls on in DD's local zone, as Plane shows it."""
     return moment(value).date().isoformat() if value else None
+
+
+def early_end(start, now):
+    """End yesterday locally, clamped to the Cycle's local start day."""
+    day = max(moment(start).date(), now.date() - timedelta(days=1))
+    return datetime.combine(day, time.max).astimezone().astimezone(timezone.utc).isoformat()

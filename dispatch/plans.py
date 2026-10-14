@@ -231,12 +231,11 @@ def assess_refusal(conn, client, name, project, cycle_id, cycles, stories, cycle
     assessed or planned does, and so does an approved one until it is Done,
     even after its end date.
     """
-    done = project["states"].get("done")
     busy, blocking = [], {cycle_id}
     for other in stories:
         plan = runs.cycle_plan(conn, name, other)
         status = plan["status"] if plan and other != cycle_id else None
-        unfinished = [story_name(issue) for issue in stories[other] if plane.state_id(issue) != done]
+        unfinished = [story_name(issue) for issue in stories[other] if not sprint.finished(project, issue)]
         if status in BUSY or (status == runs.PLAN_APPROVED and unfinished):
             busy.append((cycles[other].get("name"), status, unfinished if status == runs.PLAN_APPROVED else []))
             blocking.add(other)

@@ -24,6 +24,11 @@ class PlaneCycles(unittest.TestCase):
             mock.call('GET', '/projects/project/cycles/?per_page=100'),
             mock.call('GET', '/projects/project/cycles/?per_page=100&cursor=next')])
 
+    def test_set_cycle_end_preserves_start(self):
+        self.client.set_cycle_end('project', 'cycle', '2026-10-14T04:59:59.999999+00:00')
+        self.request.assert_called_once_with('PATCH', '/projects/project/cycles/cycle/',
+                                            {'end_date': '2026-10-14T04:59:59.999999+00:00'})
+
     def test_get_cycle(self):
         self.request.return_value = {'id': 'cycle', 'description': 'Approved', 'start_date': '2026-10-01'}
         self.assertEqual(self.client.get_cycle('project', 'cycle'), self.request.return_value)
