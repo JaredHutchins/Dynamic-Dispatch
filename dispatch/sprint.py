@@ -225,6 +225,10 @@ def finish_early(cfg, conn, client, name, project, cycle_list):
             continue
         members = client.cycle_issues(pid, cycle['id'])
         stories = [issue for issue in members if not runs.is_plan_item(conn, issue['id'])]
+        # A story removed since approval may be unfinished; the plan's reopening and re-approval decide instead.
+        approval = runs.plan_approval(conn, name, cycle['id'])
+        if approval is None or sorted(issue['id'] for issue in stories) != json.loads(approval['members']):
+            continue
         if not all(finished(project, issue) for issue in stories):
             continue
         if runs.cycle_work_active(conn, name, cycle['id'], [issue['id'] for issue in members]):

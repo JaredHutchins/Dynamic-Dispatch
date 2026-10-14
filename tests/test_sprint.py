@@ -747,6 +747,15 @@ class EarlyFinish(SprintBoard):
         self.start()
         self.client.set_cycle_end.assert_not_called()
 
+    def test_unfinished_story_removed_while_still_approved_does_not_end(self):
+        self.items = {i: self.items[i] for i in ('a', 'b')}
+        self.approve()
+        self.items['b']['state'] = 'review'
+        self.members['c'] = ['a']
+        self.start()
+        self.assertEqual(runs.cycle_plan(self.conn, 'project', 'c')['status'], runs.PLAN_APPROVED)
+        self.client.set_cycle_end.assert_not_called()
+
     def test_main_not_checked_since_merge_then_fails_then_passes(self):
         self.health(revision='before-merge')
         self.start()
