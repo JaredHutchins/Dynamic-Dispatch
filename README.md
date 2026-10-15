@@ -34,7 +34,7 @@ merge it. It is not a hosted service, and it does not replace code review.
   `cryptography` if you turn on phone alerts.
 - **Plane:** self-hosted Plane Community Edition (tested with 1.4.2), or
   Plane Cloud, where the Orchestrator and agents can sign in as Plane apps (bots).
-  See [Using Plane Cloud](deploy/README.md#using-plane-cloud).
+  See [Set up Plane Cloud](deploy/PLANE_CLOUD.md).
 - **A GitHub repository,** a GitHub App for DD (it opens pull requests and
   sets the status light), and a Git login on the machine that can push to the
   repository.

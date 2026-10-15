@@ -49,6 +49,7 @@ DEPLOY_FILES = {
     "deploy/dynamic-dispatch-rollback.service": "installed",
     "deploy/dd-install": "checkout",
     "deploy/README.md": "documentation",
+    "deploy/PLANE_CLOUD.md": "documentation",
 }
 INSTALLER_AGENTS = {"dd-agent": "claude", "dd-codex": "codex", "dd-gemini": "gemini"}
 
