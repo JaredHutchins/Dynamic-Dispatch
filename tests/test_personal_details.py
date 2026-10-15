@@ -19,7 +19,9 @@ FORBIDDEN_TERMS = (
 )
 # Entries are (repository-relative file, term, one-line reason), for deliberate
 # release uses such as a LICENSE author credit or a README public repository link.
-ALLOWED_EXCEPTIONS = []
+ALLOWED_EXCEPTIONS = [
+    ("README.md", "jaredhutchins", "Public repository URL for the main test status badge."),
+]
 
 
 def violations(root):

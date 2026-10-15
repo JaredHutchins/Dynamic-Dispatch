@@ -1,0 +1,35 @@
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: Python ${{ matrix.python }} / ${{ matrix.mode }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.x']
+        mode: [normal, ResourceWarning]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+          check-latest: true
+          allow-prereleases: false
+      - name: Run full suite
+        if: matrix.mode == 'normal'
+        run: python3 -m unittest discover -s tests -v
+      - name: Run full suite with ResourceWarning as an error
+        if: matrix.mode == 'ResourceWarning'
+        run: python3 -W error::ResourceWarning -m unittest discover -s tests -v
