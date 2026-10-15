@@ -101,7 +101,7 @@ class SelfUpdate(Base):
         self.clock = self.enterContext(mock.patch.object(publicupdate.time, "monotonic", return_value=1000))
         self.checks = [{"name": name, "head_sha": revision, "app": {"slug": "github-actions"},
                         "status": "completed", "conclusion": "success"}
-                       for name in sorted(publicupdate.TEST_CHECKS)]
+                       for name in ("Tests", "Lint")]
         def response(request, timeout):
             self.assertNotIn("Authorization", request.headers)
             self.assertEqual(timeout, 15)
@@ -142,18 +142,44 @@ class SelfUpdate(Base):
                     if "GitHub tests did not pass" in e["detail"]]
         self.assertEqual(len(warnings), 1)
 
-    def test_public_missing_job_or_wrong_source_waits(self):
+    def test_public_renamed_and_added_jobs_allow_update(self):
         revision = self.merge(["main.py"])
         self.public_update(revision)
-        check = self.checks.pop()
-        self.assertIsNone(selfupdate.pending(self.cfg, self.conn, self.checkout))
-        self.checks.append(check)
+        self.checks[0]["name"] = "Renamed test job"
+        self.checks.append(dict(self.checks[0], name="Added test job"))
+        self.assertFalse(self.cycle())
+        self.assertTrue(self.cycle())
+        self.assertEqual(self.head(), revision)
+
+    def test_public_no_actions_checks_warns_once_per_commit(self):
+        revision = self.merge(["main.py"])
+        self.public_update(revision)
+        self.checks.clear()
+        with mock.patch.object(publicupdate, "warn") as warning:
+            for _ in range(2):
+                self.clock.return_value += 300
+                self.assertIsNone(selfupdate.pending(self.cfg, self.conn, self.checkout))
+            warning.assert_called_once()
+            self.assertIn("no GitHub Actions checks", warning.call_args.args[0])
+        warnings = [e for e in runs.events(self.conn, issue_id=selfupdate.STORY_ID)
+                    if "no GitHub Actions checks" in e["detail"]]
+        self.assertEqual(len(warnings), 1)
+
+    def test_public_wrong_source_waits(self):
+        revision = self.merge(["main.py"])
+        self.public_update(revision)
         for field, value in (("app", {"slug": "another-app"}), ("head_sha", "0" * 40)):
-            original = check[field]
-            check[field] = value
+            checks = self.checks
+            self.checks = [dict(check, **{field: value}) for check in checks]
             self.clock.return_value += 300
             self.assertIsNone(selfupdate.pending(self.cfg, self.conn, self.checkout))
-            check[field] = original
+            self.checks = checks
+
+    def test_public_other_apps_do_not_block_successful_actions(self):
+        revision = self.merge(["main.py"])
+        self.public_update(revision)
+        self.checks.append(dict(self.checks[0], app={"slug": "another-app"}, conclusion="failure"))
+        self.assertIsNotNone(selfupdate.pending(self.cfg, self.conn, self.checkout))
 
     def test_public_running_work_waits_then_restarts(self):
         revision = self.merge(["README.md"])

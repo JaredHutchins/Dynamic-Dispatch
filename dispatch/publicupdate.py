@@ -9,9 +9,6 @@ from . import runs
 from .redact import warn
 
 POLL_SECONDS = 300
-# These are the jobs in .github/workflows/tests.yml. Missing jobs fail closed.
-TEST_CHECKS = {f"Python {version} / {mode}" for version in ("3.11", "3.13")
-               for mode in ("normal", "ResourceWarning")}
 _cached = {"repo": None, "after": 0, "target": None}
 
 
@@ -38,8 +35,7 @@ def target(repo, conn):
     checks = result["check_runs"]
     if result["total_count"] > len(checks):
         return None  # Bound API use rather than approving an incomplete page of checks.
-    selected = [check for check in checks if check["name"] in TEST_CHECKS
-                and check.get("app", {}).get("slug") == "github-actions"
+    selected = [check for check in checks if check.get("app", {}).get("slug") == "github-actions"
                 and check.get("head_sha") == revision]
     failed = any(check["status"] == "completed" and check["conclusion"] != "success"
                  for check in selected)
@@ -47,7 +43,11 @@ def target(repo, conn):
         message = f"DD waits to update: GitHub tests did not pass for {revision[:12]}"
         runs.record_event(conn, None, "warning", message, project="", issue_id="self-update")
         warn(message)
-    if (not failed and {check["name"] for check in selected} == TEST_CHECKS
+    if not selected and runs.claim_self_update_notice(conn, revision, "github-no-checks"):
+        message = f"DD waits to update: no GitHub Actions checks for {revision[:12]}"
+        runs.record_event(conn, None, "warning", message, project="", issue_id="self-update")
+        warn(message)
+    if (selected and not failed
             and all(check["status"] == "completed" and check["conclusion"] == "success"
                     for check in selected)):
         _cached["target"] = revision

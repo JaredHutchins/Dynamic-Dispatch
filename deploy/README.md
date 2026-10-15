@@ -381,13 +381,12 @@ validation refuses both settings together, even if one is null.
 
 DD checks main every five minutes using two anonymous GitHub API requests per
 poll (24 per hour, below the unauthenticated limit of 60 per hour per IP shared
-with other clients). No GitHub login is used for these requests. All four
-GitHub Actions test checks from `.github/workflows/tests.yml` must finish with
-`success`: Python 3.11 and 3.13, each in normal and ResourceWarning modes.
-Missing, pending or unsuccessful checks leave DD waiting; an unsuccessful
-result is logged once per commit. Network/API errors warn and retry after the
-same interval. If the test matrix changes, update the expected check names in
-`dispatch/publicupdate.py` too; missing names prevent updates.
+with other clients). No GitHub login is used for these requests. At least one
+GitHub Actions check must exist for the commit, and every GitHub Actions check
+must finish with `success`, regardless of job names. Missing, pending or
+unsuccessful checks leave DD waiting; missing checks and unsuccessful results
+are each logged once per commit. Network/API errors warn and retry after the
+same interval.
 
 After a passed result, DD uses the checkout protections described below,
 including refusing changes to installed deploy files. It stops starting new
