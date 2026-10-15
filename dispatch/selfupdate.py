@@ -56,6 +56,7 @@ DEPLOY_FILES = {
     "deploy/dd-install": "checkout",
     "deploy/README.md": "documentation",
     "deploy/PLANE_CLOUD.md": "documentation",
+    "deploy/CONTAINER.md": "documentation",
 }
 INSTALLER_AGENTS = {"dd-agent": "claude", "dd-codex": "codex", "dd-gemini": "gemini"}
 

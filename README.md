@@ -28,6 +28,8 @@ merge it. It is not a hosted service, and it does not replace code review.
 
 ## What you need
 
+For Docker or Colima, follow [Run DD in a container](deploy/CONTAINER.md).
+
 - **A Linux machine** with systemd and sudo. DD's sandbox runs each agent as
   its own Linux account. A Raspberry Pi 4 is enough.
 - **Python 3.11 or newer.** DD uses only the standard library, plus
