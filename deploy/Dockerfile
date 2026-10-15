@@ -6,8 +6,10 @@ FROM node:22-bookworm-slim
 
 # Marks the container for the doctor and the guide.
 ENV DD_CONTAINER=1 PYTHONUNBUFFERED=1
+# Named even when the base image has them: deploy/dd-install needs groupadd, useradd
+# and usermod (passwd) and visudo (sudo); the start step needs runuser (util-linux).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        python3 git sudo ca-certificates \
+        python3 git sudo passwd util-linux ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 # The image installs the agent tool; deploy/dd-install never does. 0.59.0 is the
 # version whose JSON output DD reads.

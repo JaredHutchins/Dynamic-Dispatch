@@ -7,21 +7,32 @@ import json
 import os
 from pathlib import Path
 import pwd
+import re
 import stat
 import sys
 import tempfile
 import unittest
 from unittest import mock
 
-from dispatch import runs
+from dispatch import runs, selfupdate
 from helpers import Base, git
 
 
 ROOT = Path(__file__).resolve().parents[1]
-loader = importlib.machinery.SourceFileLoader('container_start', str(ROOT / 'deploy' / 'dd-container-start'))
-spec = importlib.util.spec_from_loader(loader.name, loader)
-start = importlib.util.module_from_spec(spec)
-loader.exec_module(start)
+
+
+def load(name, path):
+    loader = importlib.machinery.SourceFileLoader(name, str(path))
+    module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+    loader.exec_module(module)
+    return module
+
+
+start = load('container_start', ROOT / 'deploy' / 'dd-container-start')
+installer = load('container_installer', ROOT / 'deploy' / 'dd-install')
+# The Debian package that provides each system command the image relies on.
+PACKAGES = {'groupadd': 'passwd', 'useradd': 'passwd', 'usermod': 'passwd', 'visudo': 'sudo',
+            'runuser': 'util-linux', 'git': 'git'}
 
 ACCOUNT = pwd.getpwuid(os.getuid())
 
@@ -187,6 +198,46 @@ class RealRollback(Base):
         self.assertIn(f'DD rolled back to {good[:12]}', output.getvalue())
 
 
+    def test_a_version_that_ran_ten_minutes_is_the_target_when_an_update_keeps_failing(self):
+        """DD's own ten-minute record in the checkout volume is what the start step rolls back to."""
+        checkout = self.tmp / 'container-checkout'
+        git('clone', str(self.origin), str(checkout), cwd=self.tmp)
+        good = git('rev-parse', 'HEAD', cwd=checkout).strip()
+        patch(self, 'CHECKOUT', checkout)
+        patch(self, 'CONFIG', self.tmp / 'config')
+        patch(self, 'PYTHON', sys.executable)
+        patch(self, 'ROLLBACK', str(ROOT / 'deploy' / 'dd-rollback'))
+        with mock.patch.object(selfupdate.time, 'monotonic', return_value=0):
+            healthy = selfupdate.HealthyVersion(checkout, good)
+        for elapsed in (300, 599, 600):
+            with mock.patch.object(selfupdate.time, 'monotonic', return_value=elapsed):
+                healthy.completed_cycle()
+            if elapsed < 600:
+                self.assertNotIn('last_good', runs.rollback_state(checkout))
+        self.assertEqual(runs.rollback_state(checkout), {'last_good': good})
+        # A self-update moves the checkout on, and the new version crashes on every start.
+        (checkout / 'new.py').write_text('broken code\n')
+        git('add', 'new.py', cwd=checkout)
+        git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+            'commit', '-qm', 'Broken update', cwd=checkout)
+        now = start.time.time()
+        for crash in range(start.FAILURES):
+            with self.subTest(crash=crash):
+                self.assertEqual(start.decision(), 0)
+            with mock.patch.object(start.subprocess, 'Popen') as popen, \
+                    mock.patch.object(start.signal, 'signal'), mock.patch.object(start.time, 'sleep'), \
+                    mock.patch.object(start.time, 'time', return_value=now + 60 * crash):
+                popen.return_value.__enter__.return_value.wait.return_value = 1
+                start.supervise()
+            self.assertEqual(popen.call_args.kwargs, {'cwd': checkout})
+        self.assertNotEqual(git('rev-parse', 'HEAD', cwd=checkout).strip(), good)
+        with mock.patch.object(start.time, 'time', return_value=now + 150), \
+                mock.patch('sys.stdout', new_callable=io.StringIO) as output:
+            self.assertEqual(start.decision(), 0)
+        self.assertEqual(git('rev-parse', 'HEAD', cwd=checkout).strip(), good)
+        self.assertIn(f'DD rolled back to {good[:12]}', output.getvalue())
+
+
 class Supervise(Folders):
     def test_counts_crashes_but_not_updates_or_clean_exits(self):
         for code in (1, start.UPDATE_EXIT, 0):
@@ -253,6 +304,40 @@ class Image(unittest.TestCase):
         self.assertIn('dd-install --container --dd-user dd --agents gemini', dockerfile)
         self.assertEqual(start.INSTALL[1:], ['deploy/dd-install', '--container', '--dd-user', 'dd',
                                              '--agents', 'gemini'])
+
+    def test_installs_every_command_the_installer_and_start_step_run(self):
+        """Without Docker: ask deploy/dd-install itself which commands a fresh container needs."""
+        dockerfile = (ROOT / 'deploy' / 'Dockerfile').read_text()
+        listed = re.search(r'apt-get install -y --no-install-recommends(.*?)&&', dockerfile, re.S)
+        packages = set(listed.group(1).replace('\\', ' ').split())
+        dd = mock.Mock(pw_uid=1001, pw_gid=1001)
+        checked, run = [], []
+        with mock.patch.object(installer.os, 'geteuid', return_value=0), \
+                mock.patch.object(installer.os, 'getcwd', return_value=str(ROOT)), \
+                mock.patch.object(installer, 'user', side_effect=lambda name: dd if name == 'dd' else None), \
+                mock.patch.object(installer, 'group', return_value=None), \
+                mock.patch.object(installer.shutil, 'which',
+                                  side_effect=lambda name, path=None: checked.append(name) or name), \
+                mock.patch('sys.stdout', new_callable=io.StringIO):
+            args = mock.Mock(container=True, dd_user='dd', agents=['gemini'])
+            checkout = installer.preflight(args)
+            # A fresh image: no accounts, groups or files yet, so every step is planned.
+            with mock.patch.object(installer, 'inspect_path',
+                                   return_value=mock.Mock(st_uid=0, st_mode=stat.S_IFDIR | 0o755)):
+                plan = installer.build_plan('dd', checkout, ['gemini'], container=True)
+        for _, action, step in plan.steps:
+            if action is installer.command:
+                run.append(step[0][0])
+            elif step[0] == Path('/etc/sudoers.d/dynamic-dispatch'):
+                run.append('visudo')  # checks the rule before installing it
+        needed = set(checked) - {'gemini'} | set(run) | {'runuser', 'git'}
+        self.assertTrue({'groupadd', 'useradd', 'usermod', 'visudo'} <= needed)
+        self.assertNotIn('systemctl', needed)
+        self.assertLessEqual(needed, set(PACKAGES), 'Name the package for a new command in PACKAGES')
+        for name in sorted(needed):
+            with self.subTest(command=name):
+                self.assertIn(PACKAGES[name], packages)
+        self.assertIn('python3', packages)
 
     def test_compose_keeps_state_in_named_volumes(self):
         compose = (ROOT / 'deploy' / 'compose.yaml').read_text()

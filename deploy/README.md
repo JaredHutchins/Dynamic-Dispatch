@@ -1078,6 +1078,8 @@ or an update restart), or the installer failing, makes the next start run the
 installed `dd-rollback` as DD, with the Pi's rules from "Rolling back a bad
 update": back to the last version that ran for ten minutes, the planned-restart
 exemption after an update, and one attempt before "DD is down and needs a hand".
+DD records that version itself, as on the Pi, in `.dd-recovery/state.json` in
+the checkout volume, so it survives restarts and image rebuilds.
 The reason is written to the log; no Bark alert is sent. While recovery is
 latched down, the container stays up but doesn't start DD. Fix the checkout,
 then remove the latch and DD starts within a minute:
