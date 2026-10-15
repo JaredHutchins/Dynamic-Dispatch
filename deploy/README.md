@@ -90,7 +90,9 @@ Have these ready first; setup tells you where to make them but makes none:
 
 - The Plane address and workspace slug, and an API token for the
   Orchestrator and for each agent's Plane account, made in Plane's settings
-  while signed in as that account. Plane Cloud isn't supported.
+  while signed in as that account. For Plane Cloud, enter
+  `https://app.plane.so`; setup sets `plane.api_url` to
+  `https://api.plane.so` unless it is already set.
 - A GitHub App for DD with contents read, pull requests write and commit
   statuses write, installed on your repositories, and its private key saved
   on this machine with `chmod 600`. A fine-grained token works instead, but

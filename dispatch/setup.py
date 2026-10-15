@@ -20,6 +20,7 @@ from . import add_project, config, doctor, github, plane, redact
 START_COMMAND = 'sudo systemctl enable --now dynamic-dispatch'
 UUID = r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
 EMAIL = r'[^\s@]+@[^\s@]+\.[^\s@]+'
+PLANE_CLOUD_API = 'https://api.plane.so'
 # The installer's agent names, and the config entries they become. Each runs
 # as the account the installer creates for it; see deploy/README.md.
 AGENTS = {
@@ -108,11 +109,9 @@ def _url(value):
         raise Invalid('Enter an http:// or https:// address, without a login, query or #.')
 
 
-def _plane_url(value):
-    _url(value)
-    host = urlsplit(value).hostname
-    if host == 'plane.so' or host.endswith('.plane.so'):
-        raise Invalid('Plane Cloud is not supported yet; enter your self-hosted Plane address.')
+def _plane_cloud(url):
+    host = urlsplit(url).hostname
+    return host == 'plane.so' or host.endswith('.plane.so')
 
 
 def _plane_user(client, who):
@@ -130,8 +129,11 @@ def _plane(cfg):
     """Ask for Plane's settings until the Orchestrator's token works; returns its Plane user ID."""
     p = cfg.setdefault('plane', {})
     while True:
-        url = _ask('Plane address, as you open it in a browser', p.get('base_url'), check=_plane_url)
+        url = _ask('Plane address, as you open it in a browser', p.get('base_url'), check=_url)
         p['base_url'] = _keep(p.get('base_url'), url.rstrip('/'), url)
+        if _plane_cloud(url):
+            # Plane Cloud's pages and its API have different addresses; one already set is kept.
+            p.setdefault('api_url', PLANE_CLOUD_API)
         p['workspace_slug'] = _ask('Plane workspace slug (the first part of the path in any Plane page)',
                                    p.get('workspace_slug'),
                                    check=_matches(r'[\w-]+', 'Enter the slug alone, without slashes.'))

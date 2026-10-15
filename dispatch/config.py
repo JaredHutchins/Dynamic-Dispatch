@@ -76,6 +76,9 @@ def _check_plane_login(holder, token_key, bot_key, where):
         raise ConfigError(f"{where} needs exactly one of {token_key} (a personal Plane token) "
                           f"or {bot_key} (a Plane app)")
     if token_key in holder:
+        token = holder[token_key]
+        if not isinstance(token, str) or not token.strip():
+            raise ConfigError(f"{where} {token_key} must be the Plane API token, as text")
         return
     bot = holder[bot_key]
     if not isinstance(bot, dict):

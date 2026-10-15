@@ -62,6 +62,16 @@ class Config(unittest.TestCase):
                 with self.assertRaisesRegex(config.ConfigError, f"{bot_key} must be an object"):
                     config.load(self.write(c))
 
+    def test_personal_plane_tokens_must_be_text(self):
+        for holder, token_key in ((lambda c: c["plane"], "orchestrator_token"),
+                                  (lambda c: c["agents"]["codex"], "plane_token")):
+            for invalid in ("", " \t", None, 42, ["fake-token"], {"token": "fake-token"}):
+                with self.subTest(identity=token_key, invalid=invalid):
+                    c = self.base()
+                    holder(c)[token_key] = invalid
+                    with self.assertRaisesRegex(config.ConfigError, f"{token_key} must be the Plane API token"):
+                        config.load(self.write(c))
+
     def test_prompt_via_validation(self):
         c = self.base()
         agent = c["agents"]["codex"]
