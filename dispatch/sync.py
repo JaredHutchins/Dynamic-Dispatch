@@ -306,9 +306,7 @@ def waiting_agents_message(cfg, conn, project):
                 ref = story_ref(cfg["projects"].get(work["project"], {}), work)
                 doing = f"is working on {ref}: {work['issue_name']}"
         elif status["until"]:
-            until = datetime.fromisoformat(status["until"]).astimezone()
-            today = datetime.now(timezone.utc).astimezone().date()
-            at = until.strftime("%H:%M" if until.date() == today else "%a %H:%M")
+            at = local_resume_time(status["until"])
             doing = f"is resting after its usage limit until {at}"
         else:
             doing = "is free"
@@ -396,3 +394,15 @@ CYCLE_HOLD = ("A Cycle is active. This story is queued and will start once the C
 
 # The repeated alert for a Cycle story someone moved to Blocked, which has no run error to repeat.
 CYCLE_BLOCKED = "This Cycle story is still Blocked."
+
+
+def local_resume_time(until):
+    """Use the same local clock and day for account and assessment waits."""
+    until = datetime.fromisoformat(until).astimezone()
+    today = datetime.now(timezone.utc).astimezone().date()
+    return until.strftime("%H:%M" if until.date() == today else "%a %H:%M")
+
+
+def assessment_cooldown(name, until):
+    return (f"{name} has reached its usage limit; its assessment will start "
+            f"at about {local_resume_time(until)}.")
