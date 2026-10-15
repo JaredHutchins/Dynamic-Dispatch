@@ -12,7 +12,7 @@ import warnings
 from pathlib import Path
 from unittest import mock
 
-from dispatch import config, github, plane, redact, setup
+from dispatch import config, github, plane, plane_apps, redact, setup
 from helpers import real_gh_request, real_plane_request
 
 # Fake secrets, made up for these tests.
@@ -128,6 +128,8 @@ class SetupTests(unittest.TestCase):
         self.enterContext(mock.patch.object(github, '_request', real_gh_request))
         self.enterContext(mock.patch.object(plane.Plane, '_request', real_plane_request))
         self.output = io.StringIO()
+        plane_apps._tokens.clear()
+        self.addCleanup(plane_apps._tokens.clear)
         github._installation_tokens.clear()
         self.addCleanup(github._installation_tokens.clear)
         self.addCleanup(redact.set_secrets, [])
@@ -148,15 +150,15 @@ class SetupTests(unittest.TestCase):
 
     def first_answers(self):
         return [
-            PLANE + '/', 'workspace', WRONG,           # a mistyped token is refused...
-            '', '', ORCH,                              # ...and asked for again
+            PLANE + '/', '', 'workspace', 'no', WRONG,           # a mistyped token is refused...
+            '', '', '', '', ORCH,                              # ...and asked for again
             'not-an-id', APPROVER_ID,
             'yes', '1234', '42', str(self.key),        # a GitHub App
             'nobody', 'reviewer',                      # an unknown approver is refused
             'claude codex',
-            ORCH,                                      # Claude's token can't be the Orchestrator's
-            CLAUDE, '', 'claude@example.com',
-            CODEX, '', 'not an email', 'codex@example.com',
+            'no', ORCH,                                      # Claude's token can't be the Orchestrator's
+            '', CLAUDE, '', 'claude@example.com',
+            'no', CODEX, '', 'not an email', 'codex@example.com',
             'yes', 'http://bark.example.com:8080', DEVICE, 'too short', BARK_KEY,
             'no',                                      # no project yet
         ]
@@ -209,7 +211,7 @@ class SetupTests(unittest.TestCase):
         self.run_setup(self.first_answers())
         original = self.path.read_bytes()
         # Enter keeps every value, including the hidden ones.
-        result, terminal, _, doctor = self.run_setup([''] * 21)
+        result, terminal, _, doctor = self.run_setup([''] * 25)
         self.assertEqual(result, 0)
         self.assertEqual(self.path.read_bytes(), original)
         self.assertEqual(self.backups(), [])
@@ -230,7 +232,7 @@ class SetupTests(unittest.TestCase):
         self.path.write_text(json.dumps(cfg))
         original = self.path.read_bytes()
         # No Plane token is asked for the Orchestrator or Claude.
-        result, terminal, _, _ = self.run_setup([''] * 19)
+        result, terminal, _, _ = self.run_setup([''] * 29)
         self.assertEqual(result, 0)
         self.assertEqual(self.path.read_bytes(), original)
         self.assertFalse(any("Orchestrator's Plane API token" in p or "Claude's Plane API token" in p
@@ -249,11 +251,11 @@ class SetupTests(unittest.TestCase):
                                          'sandbox': {'user': 'dd-agent', 'launcher': '/usr/local/bin/dd-agent-run'}}))
         self.path.chmod(0o600)
         answers = [
-            'https://app.plane.so', 'workspace', '',  # no token is asked for the Orchestrator's app
+            'https://app.plane.so', '', 'workspace', '', '', '', '', '',  # no token is asked for the Orchestrator's app
             'yes', '1234', '42', str(self.key), 'reviewer',
             'claude codex',
-            CLAUDE, '', 'claude@example.com',
-            CODEX, '', 'codex@example.com',
+            '', CLAUDE, '', 'claude@example.com',
+            'no', CODEX, '', 'codex@example.com',
             'no',                                     # no alerts
             'no',                                     # no project yet
         ]
@@ -269,26 +271,74 @@ class SetupTests(unittest.TestCase):
             self.assertNotIn(secret, out)
         self.assert_no_secret_leaked()
 
-    def test_a_rejected_plane_app_stops_setup_without_its_secret(self):
+    def test_a_rejected_plane_app_is_asked_again_without_its_secret(self):
         self.run_setup(self.first_answers())
         cfg = json.loads(self.path.read_text())
         del cfg['agents']['claude-code']['plane_token']
-        cfg['agents']['claude-code']['plane_bot'] = {'client_id': 'claude-app', 'client_secret': 'fake-wrong-app-secret',
-                                                     'app_installation_id': 'claude-install'}
+        cfg['agents']['claude-code']['plane_bot'] = {
+            'client_id': 'claude-app', 'client_secret': 'fake-wrong-app-secret',
+            'app_installation_id': 'claude-install'}
         self.path.write_text(json.dumps(cfg))
-        original = self.path.read_bytes()
-        result, _, _, _ = self.run_setup([''] * 10)
-        self.assertEqual(result, 1)
-        self.assertEqual(self.path.read_bytes(), original)
+        answers = [''] * 16 + ['', '', CLAUDE_APP, ''] + [''] * 11
+        result, terminal, _, _ = self.run_setup(answers)
+        self.assertEqual(result, 0)
+        self.assertEqual(json.loads(self.path.read_text())['agents']['claude-code']['plane_bot']['client_secret'],
+                         CLAUDE_APP)
         out = self.output.getvalue()
-        self.assertIn("Setup stopped: Claude's Plane app (plane_bot) was rejected", out)
+        self.assertIn("Claude's Plane app (plane_bot) was rejected", out)
         self.assertNotIn('fake-wrong-app-secret', out)
+        self.assertIn(CLAUDE_APP, terminal.hidden)
+        self.assert_no_secret_leaked()
+
+    def test_choose_bots_from_scratch(self):
+        answers = [PLANE, '', 'workspace', 'yes', 'orchestrator-app', ORCH_APP, 'orchestrator-install',
+                   '', 'no', GH_TOKEN, 'reviewer', 'claude',
+                   'yes', 'claude-app', CLAUDE_APP, 'claude-install', '', 'claude@example.com', 'no', 'no']
+        result, terminal, _, _ = self.run_setup(answers)
+        self.assertEqual(result, 0)
+        cfg = config.load(self.path, allow_empty_projects=True)
+        self.assertEqual(cfg['plane']['orchestrator_bot']['client_secret'], ORCH_APP)
+        self.assertEqual(cfg['agents']['claude-code']['plane_bot']['client_secret'], CLAUDE_APP)
+        self.assertNotIn('orchestrator_token', cfg['plane'])
+        self.assertNotIn('plane_token', cfg['agents']['claude-code'])
+        self.assertEqual(terminal.hidden, [ORCH_APP, GH_TOKEN, CLAUDE_APP])
+        for secret in (ORCH_APP, CLAUDE_APP, *APPS.values()):
+            self.assertNotIn(secret, self.output.getvalue())
+        self.assert_no_secret_leaked()
+
+    def test_custom_api_address_and_rejected_orchestrator_bot(self):
+        self.services = Services('https://api.example.com')
+        answers = [PLANE, 'https://api.example.com', 'workspace', 'yes', 'orchestrator-app',
+                   WRONG, 'orchestrator-install', '', '', '', '', '', ORCH_APP, '', '',
+                   'no', GH_TOKEN, 'reviewer', 'codex', 'no', CODEX, '', 'codex@example.com',
+                   'no', 'no']
+        result, terminal, _, _ = self.run_setup(answers)
+        self.assertEqual(result, 0)
+        cfg = config.load(self.path, allow_empty_projects=True)
+        self.assertEqual(cfg['plane']['api_url'], 'https://api.example.com')
+        self.assertEqual(cfg['plane']['orchestrator_bot']['client_secret'], ORCH_APP)
+        self.assertIn('Plane app (orchestrator_bot) was rejected', self.output.getvalue())
+        self.assertEqual(terminal.hidden, [WRONG, ORCH_APP, GH_TOKEN, CODEX])
+        self.assertNotIn(ORCH_APP, self.output.getvalue())
+        self.assert_no_secret_leaked()
+
+    def test_switch_login_types_removes_old_credentials(self):
+        settings = {'plane_token': CLAUDE}
+        with mock.patch('builtins.input', side_effect=['yes', 'claude-app', 'claude-install']), \
+                mock.patch('getpass.getpass', return_value=CLAUDE_APP):
+            setup._plane_identity(settings, 'Claude', 'plane_bot', 'plane_token')
+        self.assertNotIn('plane_token', settings)
+        self.assertEqual(settings['plane_bot']['client_secret'], CLAUDE_APP)
+        with mock.patch('builtins.input', return_value='no'), \
+                mock.patch('getpass.getpass', return_value=CLAUDE):
+            setup._plane_identity(settings, 'Claude', 'plane_bot', 'plane_token')
+        self.assertEqual(settings, {'plane_token': CLAUDE})
 
     def test_a_change_keeps_the_original_as_a_private_backup(self):
         self.run_setup(self.first_answers())
         original = self.path.read_bytes()
-        answers = [''] * 21
-        answers[12] = 'other@example.com'  # Claude's commit email
+        answers = [''] * 25
+        answers[15] = 'other@example.com'  # Claude's commit email
         self.run_setup(answers)
         cfg = json.loads(self.path.read_text())
         self.assertEqual(cfg['agents']['claude-code']['git_author']['email'], 'other@example.com')
@@ -309,15 +359,15 @@ class SetupTests(unittest.TestCase):
         self.path.chmod(0o600)
         original = self.path.read_bytes()
         # The approver's Plane ID stays unset when skipped.
-        self.run_setup([''] * 15)
+        self.run_setup([''] * 18)
         self.assertEqual(self.path.read_bytes(), original)
         self.assertEqual(self.backups(), [])
         self.assert_no_secret_leaked()
 
     def test_plain_token_is_checked_without_showing_it(self):
-        answers = [PLANE, 'workspace', ORCH, '',
+        answers = [PLANE, '', 'workspace', 'no', ORCH, '',
                    'no', GH_WRONG, GH_TOKEN, 'reviewer',
-                   'codex', CODEX, '', 'codex@example.com',
+                   'codex', 'no', CODEX, '', 'codex@example.com',
                    'no', 'yes']
         result, _, projects, _ = self.run_setup(answers)
         self.assertEqual(result, 0)
@@ -332,8 +382,8 @@ class SetupTests(unittest.TestCase):
     def test_app_with_too_few_permissions_is_refused(self):
         self.services.permissions = {'contents': 'read'}
         answers = self.first_answers()
-        del answers[2:5]
-        result, terminal, *_ = self.run_setup(answers[:9])
+        del answers[4:9]
+        result, terminal, *_ = self.run_setup(answers[:11])
         self.assertEqual(result, 1)
         # Refused, so the App's details are asked for again rather than going on to the approver.
         self.assertTrue(terminal.prompts[-1].startswith('GitHub App ID [1234]'), terminal.prompts[-1])
@@ -345,7 +395,7 @@ class SetupTests(unittest.TestCase):
         self.services.grants = [{'contents': 'read'}]
         answers = self.first_answers()
         # Enter keeps the App ID, installation ID and key once the permissions are granted.
-        answers[12:12] = ['', '', '']
+        answers[16:16] = ['', '', '']
         result, *_ = self.run_setup(answers)
         self.assertEqual(result, 0)
         self.assertIn('needs contents read, pull requests write and commit statuses write', self.output.getvalue())
@@ -370,7 +420,7 @@ class SetupTests(unittest.TestCase):
         self.assert_no_secret_leaked()
 
     def test_unsafe_answers_are_refused(self):
-        answers = ['https://user:pw@plane.example.com', PLANE, 'work/space']
+        answers = ['https://user:pw@plane.example.com', PLANE, '', 'work/space']
         self.assertEqual(self.run_setup(answers)[0], 1)
         out = self.output.getvalue()
         self.assertIn('without a login', out)
@@ -382,7 +432,7 @@ class SetupTests(unittest.TestCase):
             # What getpass does when it can't turn echo off: warn, then read the answer visibly.
             warnings.warn('Can not control echo on the terminal.', getpass.GetPassWarning)
             return ORCH
-        with contextlib.redirect_stdout(self.output), mock.patch('builtins.input', side_effect=[PLANE, 'workspace']), \
+        with contextlib.redirect_stdout(self.output), mock.patch('builtins.input', side_effect=[PLANE, '', 'workspace', 'no']), \
                 mock.patch('getpass.getpass', no_terminal):
             self.assertEqual(setup.run(self.path), 1)
         self.assertIn('run it in a terminal', self.output.getvalue())
