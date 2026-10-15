@@ -4,6 +4,7 @@ import io
 import os
 from pathlib import Path
 import pwd
+import re
 import shutil
 import stat
 import sys
@@ -47,6 +48,9 @@ class Doctor(unittest.TestCase):
                    mock.patch.object(github, 'repository', return_value={'permissions': {'push': True}}),
                    mock.patch.object(github, 'token_expiry', return_value=datetime.now(timezone.utc) + timedelta(days=90))]
         self.mocks = [self.enterContext(p) for p in patches]
+        # The marker from the image would switch the doctor to its container checks.
+        self.enterContext(mock.patch.dict(os.environ))
+        os.environ.pop(doctor.CONTAINER_MARKER, None)
         self.host()
         self.fake_host()
 
@@ -60,7 +64,11 @@ class Doctor(unittest.TestCase):
         self.files = {'/fake-private-env': os.stat_result((stat.S_IFREG | 0o640, 0, 0, 1, 0, 1234, 0, 0, 0, 0)),
                       doctor.ROLLBACK_HELPER: os.stat_result((stat.S_IFREG | 0o755, 0, 0, 1, 0, 0, 0, 0, 0, 0)),
                       doctor.LAUNCHER: os.stat_result((stat.S_IFREG | 0o755, 0, 0, 1, 0, 0, 0, 0, 0, 0)),
-                      '/fake-private-launcher': os.stat_result((stat.S_IFREG | 0o755, 0, 0, 1, 0, 0, 0, 0, 0, 0))}
+                      '/fake-private-launcher': os.stat_result((stat.S_IFREG | 0o755, 0, 0, 1, 0, 0, 0, 0, 0, 0)),
+                      doctor.START_STEP: os.stat_result((stat.S_IFREG | 0o755, 0, 0, 1, 0, 0, 0, 0, 0, 0)),
+                      str(doctor.CHECKOUT / 'deploy' / 'dd-install'):
+                          os.stat_result((stat.S_IFREG | 0o755, 0, 0, 1, 1001, 0, 0, 0, 0, 0)),
+                      doctor.CREDENTIAL_FOLDER: os.stat_result((stat.S_IFDIR | 0o700, 0, 0, 1, 0, 0, 0, 0, 0, 0))}
 
     def fake_host(self):
         """Answer the doctor's host lookups from host()'s state, with every Git, systemctl and sudo call faked."""
@@ -459,6 +467,91 @@ class Doctor(unittest.TestCase):
         for call in self.commands.call_args_list:
             command = call.args[0]
             self.assertTrue(command[:2] == ['systemctl', 'show'] or command[:3] == ['sudo', '-n', '-l'], command)
+
+
+class ContainerDoctor(Doctor):
+    """The same host checks with the image's marker set, and the volume checks faked."""
+
+    def setUp(self):
+        super().setUp()
+        os.environ[doctor.CONTAINER_MARKER] = '1'
+        self.volumes = self.enterContext(mock.patch.object(doctor.doctor_sandbox, 'check_container',
+                                                           side_effect=self.container_checks))
+
+    def container_checks(self, volumes, credentials, report):
+        for label, path, login in volumes + credentials:
+            report('OK', label, 'Fake metadata allows it.')
+
+    def test_success_and_personal_warning(self):
+        code, output = self.run_doctor()
+        self.assertEqual(code, 0)
+        for check in ('Python', 'Config', 'Store', 'Agent 1 account', 'Start step', 'Installer',
+                      'Credential mount folder', 'Rollback helper', 'Launcher', 'Sudo rule agent 1',
+                      'Volume DD home', 'Volume checkout', 'Volume config', 'Volume history',
+                      'Volume repositories', 'Volume story folders', 'Volume agent env files',
+                      'Volume Gemini home', 'Gemini credential'):
+            self.assertIn('OK ' + check + ':', output)
+        for check in ('Service', 'Service account', 'Service checkout', 'Rollback service'):
+            self.assertIn(f"SKIP {check}: skipped: systemd units don't apply in a container", output)
+        self.assertNotIn('FAIL', output)
+        self.assertFalse(any(call.args[0][0] == 'systemctl' for call in self.commands.call_args_list))
+
+    def test_service_checks_fail(self):
+        cases = [('Rollback helper', lambda: self.files.update({doctor.ROLLBACK_HELPER: None})),
+                 ('Launcher', lambda: self.files.update({doctor.LAUNCHER: None})),
+                 ('Sudo rule agent 1', lambda: self.sudo.clear()),
+                 ('Start step', lambda: self.files.update({doctor.START_STEP: None})),
+                 ('Start step', lambda: self.files.update({doctor.START_STEP: os.stat_result(
+                     (stat.S_IFREG | 0o755, 0, 0, 1, 1001, 0, 0, 0, 0, 0))})),
+                 ('Installer', lambda: self.files.update({str(doctor.CHECKOUT / 'deploy' / 'dd-install'): None})),
+                 ('Credential mount folder', lambda: self.files.update({doctor.CREDENTIAL_FOLDER: os.stat_result(
+                     (stat.S_IFDIR | 0o755, 0, 0, 1, 0, 0, 0, 0, 0, 0))})),
+                 ('Credential mount folder', lambda: self.files.update({doctor.CREDENTIAL_FOLDER: None}))]
+        for label, change in cases:
+            with self.subTest(label=label):
+                change()
+                code, output = self.run_doctor()
+                self.assertEqual(code, 1)
+                self.assertRegex(output, 'FAIL ' + label + ': .*(deploy/README.md|checkout)')
+                self.assertEqual(output.count('FAIL'), 1)
+                self.assertNotIn('fake-private', output)
+                self.host()
+
+    def test_container_check_failures_set_exit_status(self):
+        self.volumes.side_effect = lambda volumes, credentials, report: report(
+            'FAIL', volumes[0][0], "Folder isn't writable by its account.")
+        code, output = self.run_doctor()
+        self.assertEqual(code, 1)
+        self.assertIn('FAIL Volume DD home:', output)
+
+    def test_volumes_match_compose(self):
+        compose = (doctor.CHECKOUT / 'deploy' / 'compose.yaml').read_text()
+        mounted = re.findall(r'^      - [\w-]+:(\S+)$', compose, re.M)
+        self.assertEqual(sorted(path for label, path, login in doctor.VOLUMES), sorted(mounted))
+        self.run_doctor()
+        volumes, credentials, report = self.volumes.call_args.args
+        self.assertEqual([path for label, path, login in volumes], [path for label, path, login in doctor.VOLUMES])
+        self.assertEqual(credentials, [('Gemini credential', '/home/dd-gemini/gemini-credential.json', 'dd-gemini')])
+
+    def test_service_missing_skips_dependants(self):
+        self.units.clear()
+        code, output = self.run_doctor()
+        self.assertEqual(code, 0)
+        self.assertNotIn('the Service check failed', output)
+
+    def test_service_reads_only(self):
+        self.run_doctor()
+        for call in self.commands.call_args_list:
+            self.assertEqual(call.args[0][:3], ['sudo', '-n', '-l'])
+
+    def test_only_the_image_marker_counts(self):
+        for value in ('0', '', 'true'):
+            with self.subTest(value=value):
+                os.environ[doctor.CONTAINER_MARKER] = value
+                code, output = self.run_doctor()
+                self.assertIn('OK Service: dynamic-dispatch.service is installed.', output)
+                self.assertNotIn('Start step', output)
+                self.volumes.assert_not_called()
 
 
 class PlaneLists(unittest.TestCase):
