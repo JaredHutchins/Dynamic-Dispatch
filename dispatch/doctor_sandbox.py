@@ -146,25 +146,51 @@ def _private(info, account):
     return info.st_uid == account.pw_uid and not stat.S_IMODE(info.st_mode) & 0o077
 
 
+def _hidden(path, account):
+    """Whether the nearest folder above path that DD's account can see is private to the agent's account."""
+    for parent in path.parents:
+        try:
+            info = _metadata(parent)
+        except PermissionError:
+            continue  # inside a folder DD's account can't enter; look further up
+        return _private(info, account)
+    return False
+
+
 def _credential(path, account, groups):
     try:
         info = _metadata(path)
     except FileNotFoundError:
-        return 'OK', 'No credential copy exists for this agent, so none can be exposed.'
+        return 'OK', 'No login file exists here for this agent, so none can be exposed.'
     except PermissionError:
-        # DD's account can't see into an agent's private home, which is what keeps the copy private.
-        if _private(_metadata(path.parent), account):
+        # DD's account can't see into an agent's private home, which is what keeps the login private.
+        if _hidden(path, account):
             return 'OK', 'Only its agent account can open the folder holding it; the file was not opened.'
         raise
     if stat.S_ISREG(info.st_mode) and _private(info, account):
         return 'OK', 'Owned by its agent account with no group or other access; the file was not opened.'
-    return 'FAIL', ('Readable beyond its agent account; restart the container so its start step copies it with mode 400, '
-                    'as deploy/README.md "A Gemini credential file" describes.')
+    return 'FAIL', ('Readable beyond its agent account; give it to that account alone with mode 600 or 400, or for a '
+                    'mounted Gemini credential restart the container, as deploy/CONTAINER.md describes.')
 
 
-def check_container(volumes, credentials, report):
-    """Report each container volume's and credential copy's access for its account, from metadata alone."""
+def _env_file(path, account, groups):
+    try:
+        info = _metadata(path)
+    except FileNotFoundError:
+        return 'OK', 'No env file exists for this agent, so none can be exposed.'
+    # DD's account is in every agent's group to scrub env values from output, as on a Linux host.
+    if (stat.S_ISREG(info.st_mode) and info.st_uid == 0 and info.st_gid == account.pw_gid
+            and not stat.S_IMODE(info.st_mode) & 0o027):
+        return 'OK', "Owned by root and its agent's own group, with no access for others; the file was not opened."
+    return 'FAIL', ("Readable beyond its agent's group or writable by it; make it root:<agent group> with mode 640, "
+                    'as deploy/CONTAINER.md describes.')
+
+
+def check_container(volumes, env_files, logins, report):
+    """Report each container volume's, env file's and login file's access for its account, from metadata alone."""
     for label, path, login in volumes:
         _judge(report, label, lambda: _volume(Path(path), *_lookup(login)))
-    for label, path, login in credentials:
+    for label, path, login in env_files:
+        _judge(report, label, lambda: _env_file(Path(path), *_lookup(login)))
+    for label, path, login in logins:
         _judge(report, label, lambda: _credential(Path(path), *_lookup(login)))

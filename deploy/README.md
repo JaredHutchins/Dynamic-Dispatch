@@ -1004,14 +1004,19 @@ The doctor also checks the rest of the host:
   units don't exist, so the `Service`, `Service account`, `Service checkout`
   and `Rollback service` checks are skipped with that reason. The rollback
   helper, launcher and sudo rule are checked as above, and instead of the units
-  the doctor checks that each volume in `deploy/compose.yaml` is a folder its
-  account can write (`dd`'s volumes, root's `/etc/dynamic-dispatch` and
-  `dd-gemini`'s home); that `/usr/local/bin/dd-container-start` is installed
-  and owned by root and `deploy/dd-install` is in the checkout; that
-  `/etc/dd-credentials` is a folder only root can open; and that a copied
-  Gemini credential, if there is one, is readable by `dd-gemini` alone. DD's
-  account can't see into Gemini's private home, which is enough to show the
-  copy is private; the credential and mount are never opened. Run it as DD:
+  the doctor reports which agents the image's `DD_AGENTS` setting includes
+  (Gemini alone for an image built before the setting) and, for each, that its
+  tool is on the launcher's PATH and its account exists. It checks that each
+  volume in `deploy/compose.yaml` is a folder its account can write (`dd`'s
+  volumes, root's `/etc/dynamic-dispatch` and each included agent's home);
+  that `/usr/local/bin/dd-container-start` is installed and owned by root and
+  `deploy/dd-install` is in the checkout; that `/etc/dd-credentials` is a
+  folder only root can open; that each included agent's env file, if there is
+  one, is owned by root and that agent's group with no access for others; and
+  that a login kept in an agent's home (Codex's `.codex/auth.json`, Gemini's
+  copied credential), if there is one, is readable by that agent alone. DD's
+  account can't see into an agent's private home, which is enough to show the
+  login is private; no login file or mount is ever opened. Run it as DD:
 
       docker compose -f deploy/compose.yaml exec --user dd dd python3 main.py --doctor --config /home/dd/config/config.json
 
@@ -1019,9 +1024,13 @@ The doctor also checks the rest of the host:
 
 `deploy/Dockerfile` and `deploy/compose.yaml` run DD in one Debian container,
 on a Mac or any machine with Docker, with the same accounts and sudo rule as a
-Linux host. The image has Python, Git, sudo and Gemini CLI 0.59.0, is set up
-with `dd-install --container --agents gemini`, and sets `DD_CONTAINER=1`. It
-needs no privileged mode and no Docker socket. From the repository root:
+Linux host. The `DD_AGENTS` build setting chooses its agents, any of `claude`,
+`codex` and `gemini` separated by spaces (Gemini alone by default). The image
+has Python, Git, sudo and each chosen agent's tool at a pinned version, is set
+up with `dd-install --container --agents` for exactly those agents, and sets
+`DD_CONTAINER=1`. It needs no privileged mode and no Docker socket.
+[Run DD in a container](CONTAINER.md) covers choosing agents and logging each
+in. From the repository root:
 
     docker compose -f deploy/compose.yaml up -d --build
 
@@ -1047,10 +1056,10 @@ After the first clone, write the config into its own volume, then restart:
     docker compose -f deploy/compose.yaml run --rm --user dd --entrypoint python3 dd main.py --setup --config /home/dd/config/config.json
     docker compose -f deploy/compose.yaml restart
 
-Until then DD can't start, and each failure counts towards recovery below. Use
-the Gemini agent settings in "Adding Gemini CLI" above; its env file is
-`/etc/dynamic-dispatch/gemini.env`, owned by `root:dd-gemini` with mode 640,
-which you can write with `docker compose -f deploy/compose.yaml exec dd ...`.
+Until then DD can't start, and each failure counts towards recovery below.
+Choose the agents the image includes. Each agent's env file, such as
+`/etc/dynamic-dispatch/gemini.env`, is owned by `root` and its agent's group
+with mode 640; [Run DD in a container](CONTAINER.md) shows how to write it.
 Set `db_path` to `/home/dd/.local/share/dynamic-dispatch/runs.db` and use
 `/srv/dynamic-dispatch/repos` and `/srv/dynamic-dispatch/worktrees` for project
 clones and story folders. Set `self_update_public_repo` to DD's public
@@ -1059,7 +1068,8 @@ repository to update DD to tested public `main` commits.
 ### What survives
 
 Named volumes keep DD's home (including its Git login), checkout, config,
-history, project repositories, story folders, agent env files and Gemini's home.
+history, project repositories, story folders, agent env files and each agent's
+home (`/home/dd-agent`, `/home/dd-codex` and `/home/dd-gemini`).
 Nothing else lasts: anything written elsewhere is gone when the container is
 recreated. `down` keeps the volumes; `down -v` deletes them. Logs:
 

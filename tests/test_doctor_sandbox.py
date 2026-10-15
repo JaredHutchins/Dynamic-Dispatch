@@ -159,9 +159,14 @@ class Container(unittest.TestCase):
     def setUp(self):
         self.dd = SimpleNamespace(pw_uid=1001, pw_gid=1001)
         self.gemini = SimpleNamespace(pw_uid=1002, pw_gid=1002)
+        self.codex = SimpleNamespace(pw_uid=1004, pw_gid=1004)
         self.files = {'/': info(), '/home': info(), '/home/dd': info(0o700, uid=1001, gid=1001),
                       '/home/dd-gemini': info(0o700, uid=1002, gid=1002),
-                      '/home/dd-gemini/gemini-credential.json': info(0o400, uid=1002, gid=1002, directory=False)}
+                      '/home/dd-gemini/gemini-credential.json': info(0o400, uid=1002, gid=1002, directory=False),
+                      '/home/dd-codex': info(0o700, uid=1004, gid=1004),
+                      '/home/dd-codex/.codex': info(0o700, uid=1004, gid=1004),
+                      '/home/dd-codex/.codex/auth.json': info(0o600, uid=1004, gid=1004, directory=False),
+                      '/etc/dynamic-dispatch/codex.env': info(0o640, uid=0, gid=1004, directory=False)}
 
         def lstat(path):
             if self.files.get(str(path)) is None:
@@ -173,14 +178,17 @@ class Container(unittest.TestCase):
         self.enterContext(mock.patch.object(os, 'lstat', side_effect=lstat))
         self.attrs = self.enterContext(mock.patch.object(os, 'listxattr', return_value=[]))
         self.enterContext(mock.patch.object(sandbox.pwd, 'getpwnam',
-                                            side_effect=lambda name: {'dd': self.dd, 'dd-gemini': self.gemini}[name]))
+                                            side_effect=lambda name: {'dd': self.dd, 'dd-gemini': self.gemini,
+                                                                       'dd-codex': self.codex}[name]))
         self.enterContext(mock.patch.object(os, 'getgrouplist', side_effect=lambda name, gid: [gid]))
         self.opened = self.enterContext(mock.patch('builtins.open', side_effect=AssertionError('secret read')))
 
     def run_checks(self):
         results = {}
         sandbox.check_container([('Volume DD home', '/home/dd', 'dd'), ('Volume Gemini home', '/home/dd-gemini', 'dd-gemini')],
-                                [('Gemini credential', '/home/dd-gemini/gemini-credential.json', 'dd-gemini')],
+                                [('Codex env file', '/etc/dynamic-dispatch/codex.env', 'dd-codex')],
+                                [('Gemini credential', '/home/dd-gemini/gemini-credential.json', 'dd-gemini'),
+                                 ('Codex login', '/home/dd-codex/.codex/auth.json', 'dd-codex')],
                                 lambda status, label, reason: results.update({label: (status, reason)}))
         self.opened.assert_not_called()
         for status, reason in results.values():
@@ -189,7 +197,8 @@ class Container(unittest.TestCase):
 
     def test_ok(self):
         self.assertEqual({label: status for label, (status, reason) in self.run_checks().items()},
-                         {'Volume DD home': 'OK', 'Volume Gemini home': 'OK', 'Gemini credential': 'OK'})
+                         {'Volume DD home': 'OK', 'Volume Gemini home': 'OK', 'Codex env file': 'OK',
+                          'Gemini credential': 'OK', 'Codex login': 'OK'})
 
     def test_volume_missing_or_not_writable_fails(self):
         for change in [None, info(0o500, uid=1001, gid=1001), info(0o777, uid=0, directory=False),
@@ -228,3 +237,31 @@ class Container(unittest.TestCase):
         self.files['/home/dd-gemini/gemini-credential.json'] = SimpleNamespace(
             st_mode=stat.S_IFLNK | 0o777, st_uid=1002, st_gid=1002)
         self.assertEqual(self.run_checks()['Gemini credential'][0], 'WARN')
+
+    def test_login_deep_in_a_private_home_is_hidden_from_dd(self):
+        """Codex keeps its login a folder down, so DD can see neither the file nor the folder holding it."""
+        for path in ('/home/dd-codex/.codex/auth.json', '/home/dd-codex/.codex'):
+            self.files[path] = PermissionError('fake-private')
+        self.assertEqual(self.run_checks()['Codex login'][0], 'OK')
+        self.files['/home/dd-codex'] = info(0o711, uid=1004, gid=1004)
+        self.assertEqual(self.run_checks()['Codex login'][0], 'WARN')
+
+    def test_no_login_saved_yet(self):
+        self.files['/home/dd-codex/.codex/auth.json'] = None
+        self.assertEqual(self.run_checks()['Codex login'][0], 'OK')
+
+    def test_env_file_private_to_its_agent(self):
+        for mode in (0o640, 0o600, 0o440, 0o400):
+            with self.subTest(mode=oct(mode)):
+                self.files['/etc/dynamic-dispatch/codex.env'] = info(mode, uid=0, gid=1004, directory=False)
+                self.assertEqual(self.run_checks()['Codex env file'][0], 'OK')
+        self.files['/etc/dynamic-dispatch/codex.env'] = None
+        self.assertEqual(self.run_checks()['Codex env file'][0], 'OK')
+
+    def test_env_file_readable_beyond_its_agent_fails(self):
+        for change in [info(0o644, uid=0, gid=1004, directory=False), info(0o660, uid=0, gid=1004, directory=False),
+                       info(0o640, uid=0, gid=1002, directory=False), info(0o640, uid=1004, gid=1004, directory=False),
+                       info(0o750, uid=0, gid=1004)]:
+            with self.subTest(change=change):
+                self.files['/etc/dynamic-dispatch/codex.env'] = change
+                self.assertEqual(self.run_checks()['Codex env file'][0], 'FAIL')
