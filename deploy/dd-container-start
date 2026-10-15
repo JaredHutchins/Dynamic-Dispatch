@@ -1,0 +1,238 @@
+#!/usr/bin/python3
+"""DD's container start step: deliberately independent of DD's checkout imports.
+
+As root it fixes the volumes' owners, clones DD on first start, lets the
+installed rollback helper recover from a crash loop, re-runs the checkout's
+installer and hands the Gemini credential to Gemini's account. Then it drops
+to DD's account for good and runs DD once; Docker starts the container again
+when DD exits.
+"""
+
+import json
+import os
+from pathlib import Path
+import pwd
+import signal
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+
+DD_USER, GEMINI_USER = 'dd', 'dd-gemini'
+HOME = Path('/home/dd')
+CHECKOUT = HOME / 'checkout'
+CONFIG = HOME / 'config'
+HISTORY = HOME / '.local/share/dynamic-dispatch'
+GEMINI_HOME = Path('/home/dd-gemini')
+# The mount sits in a root-only folder, so only the copy Gemini's account owns is readable.
+CREDENTIALS = Path('/etc/dd-credentials')
+CREDENTIAL_MOUNT = CREDENTIALS / 'gemini.json'
+CREDENTIAL = GEMINI_HOME / 'gemini-credential.json'
+PUBLIC_REPO = 'https://github.com/JaredHutchins/Dynamic-Dispatch.git'
+SCRIPT = '/usr/local/bin/dd-container-start'
+ROLLBACK = '/usr/local/bin/dd-rollback'
+PYTHON = '/usr/bin/python3'
+INSTALL = [PYTHON, 'deploy/dd-install', '--container', '--dd-user', DD_USER, '--agents', 'gemini']
+# The Pi's limits: StartLimitBurst=3 in StartLimitIntervalSec=300, RestartSec=10.
+FAILURES, WINDOW, RESTART_DELAY = 3, 300, 10
+UPDATE_EXIT = 75  # DD's self-update restart, which is planned rather than a failure
+DOWN = 3  # the decision's exit code while recovery is latched off
+DOWN_POLL = 60
+
+
+def as_dd(*args):
+    return subprocess.run(['runuser', '-u', DD_USER, '--', *args]).returncode
+
+
+def recovery_state():
+    try:
+        state = json.loads((CHECKOUT / '.dd-recovery' / 'state.json').read_text())
+    except (OSError, ValueError):
+        return {}  # DD itself reports an unreadable state; nothing is latched
+    return state if isinstance(state, dict) else {}
+
+
+def recent_failures(now):
+    try:
+        stamps = json.loads((CHECKOUT / '.dd-recovery' / 'container-failures.json').read_text())
+    except (OSError, ValueError):
+        stamps = []
+    if not isinstance(stamps, list):
+        return []
+    return [s for s in stamps if isinstance(s, (int, float)) and 0 <= now - s <= WINDOW]
+
+
+def save_failures(stamps):
+    folder = CHECKOUT / '.dd-recovery'
+    folder.mkdir(mode=0o700, exist_ok=True)
+    name = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', dir=folder, delete=False) as out:
+            name = out.name
+            json.dump(stamps, out)
+            out.flush()
+            os.fsync(out.fileno())
+        os.replace(name, folder / 'container-failures.json')
+    finally:
+        if name and os.path.exists(name):
+            os.unlink(name)
+
+
+def record_failure():
+    now = time.time()
+    save_failures(recent_failures(now) + [now])
+
+
+def decision():
+    """As DD: 0 to start DD, DOWN while recovery is latched off. Rolls back after a crash loop."""
+    if recovery_state().get('down'):
+        return DOWN
+    if len(recent_failures(time.time())) < FAILURES:
+        return 0
+    # The same rules as the Pi: ten-minute last good, planned-restart exemption, latch.
+    result = subprocess.run([PYTHON, ROLLBACK, 'recover', str(CHECKOUT)],
+                            capture_output=True, text=True, timeout=120)
+    try:
+        outcome = json.loads(result.stdout)
+    except ValueError:
+        outcome = {'restart': False, 'message': 'DD is down and needs a hand'}
+    print(f'DD failed to start {FAILURES} times within {WINDOW // 60} minutes', flush=True)
+    for key in ('log', 'message'):
+        if outcome.get(key):
+            print(outcome[key], flush=True)
+    save_failures([])
+    return 0 if outcome.get('restart') else DOWN
+
+
+def own(path, account, mode):
+    """Give a volume's top folder to its account; Docker creates new volumes owned by root."""
+    if path.is_symlink() or not path.is_dir():
+        raise RuntimeError(f'Expected a volume folder at {path}')
+    os.chown(path, account.pw_uid, account.pw_gid)
+    path.chmod(mode)
+
+
+def hand_over_credential(account):
+    """Copy the mounted credential for Gemini's account alone, or remove a copy no longer mounted."""
+    folder = CREDENTIALS.lstat()
+    # Owned by root, which runs this step.
+    if not stat.S_ISDIR(folder.st_mode) or folder.st_uid != os.geteuid() or stat.S_IMODE(folder.st_mode) & 0o077:
+        raise RuntimeError(f'{CREDENTIALS} must be a folder only root can open; mount the file, not a folder')
+    if not CREDENTIAL_MOUNT.exists():
+        # Gemini's account can plant a link here; unlink removes the link, never its target.
+        if CREDENTIAL.is_symlink() or CREDENTIAL.exists():
+            CREDENTIAL.unlink()
+        return
+    if CREDENTIAL_MOUNT.is_symlink() or not CREDENTIAL_MOUNT.is_file():
+        raise RuntimeError(f'{CREDENTIAL_MOUNT} must be a file')
+    content = CREDENTIAL_MOUNT.read_bytes()
+    name = None
+    try:
+        # A new random name and rename: neither follows a link Gemini's account made.
+        with tempfile.NamedTemporaryFile(dir=GEMINI_HOME, prefix='.dd-credential-', delete=False) as out:
+            name = out.name
+            os.fchown(out.fileno(), account.pw_uid, account.pw_gid)
+            os.fchmod(out.fileno(), 0o400)
+            out.write(content)
+            out.flush()
+            os.fsync(out.fileno())
+        os.replace(name, CREDENTIAL)
+    finally:
+        if name and os.path.exists(name):
+            os.unlink(name)
+
+
+def wait_while_down():
+    reported = False
+    while (code := as_dd(PYTHON, SCRIPT, 'decision')) == DOWN:
+        if not reported:
+            print('DD is down and needs a hand: recovery is latched off. Fix the checkout, then delete '
+                  f'{CHECKOUT}/.dd-recovery/state.json and DD starts within a minute.', flush=True)
+            reported = True
+        time.sleep(DOWN_POLL)
+    if code:
+        raise RuntimeError('Could not decide whether DD needs rolling back')
+
+
+def drop_to_dd(account):
+    os.initgroups(DD_USER, account.pw_gid)
+    os.setgid(account.pw_gid)
+    os.setuid(account.pw_uid)
+    os.environ.update(HOME=str(HOME), USER=DD_USER, LOGNAME=DD_USER)
+    os.chdir(CHECKOUT)
+    os.execv(PYTHON, [PYTHON, SCRIPT, 'supervise'])
+
+
+def bootstrap():
+    dd, gemini = pwd.getpwnam(DD_USER), pwd.getpwnam(GEMINI_USER)
+    for path in (HOME, CHECKOUT, CONFIG, HISTORY):
+        own(path, dd, 0o700)
+    own(GEMINI_HOME, gemini, 0o700)
+    if not any(CHECKOUT.iterdir()):
+        print(f'First start: cloning {PUBLIC_REPO} into {CHECKOUT}', flush=True)
+        if as_dd('git', '-c', 'core.hooksPath=/dev/null', 'clone', '--branch', 'main',
+                 PUBLIC_REPO, str(CHECKOUT)):
+            raise RuntimeError('Could not clone DD')
+    if not (CHECKOUT / '.git').is_dir():
+        raise RuntimeError(f'{CHECKOUT} is neither empty nor a Git checkout')
+    # Recovery comes first, so the installer below matches whichever version runs.
+    wait_while_down()
+    if subprocess.run(INSTALL, cwd=CHECKOUT).returncode:
+        # A broken installer counts, so an update that breaks it is rolled back too.
+        as_dd(PYTHON, SCRIPT, 'failure')
+        raise RuntimeError('deploy/dd-install failed')
+    hand_over_credential(gemini)
+    # Root is given up before any of DD's code runs; sudo still allows only the agent launcher.
+    drop_to_dd(dd)
+
+
+def supervise():
+    """As DD: run DD once, counting a crash, then exit so Docker restarts the container."""
+    stopped = False
+    child = None
+
+    def stop(signum, frame):
+        nonlocal stopped
+        stopped = True
+        if child is not None:
+            child.send_signal(signum)
+
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(signum, stop)
+    with subprocess.Popen([PYTHON, 'main.py', '--config', str(CONFIG / 'config.json')],
+                          cwd=CHECKOUT) as child:
+        if stopped:
+            child.terminate()  # the stop arrived before child was set
+        code = child.wait()
+    if stopped:
+        return code
+    if code not in (0, UPDATE_EXIT):
+        record_failure()
+    time.sleep(RESTART_DELAY)
+    return code
+
+
+def main():
+    os.umask(0o022)
+    action = sys.argv[1] if len(sys.argv) > 1 else 'bootstrap'
+    if action == 'decision':
+        return decision()
+    if action == 'failure':
+        record_failure()
+        return 1
+    if action == 'supervise':
+        return supervise()
+    if action != 'bootstrap' or os.geteuid() != 0:
+        raise RuntimeError('The container start step must run as root')
+    bootstrap()
+    return 0
+
+
+if __name__ == '__main__':
+    try:
+        sys.exit(main())
+    except Exception as error:
+        # Never a traceback: it could quote a credential file's contents.
+        print(f'dd-container-start: {error}', file=sys.stderr)
+        sys.exit(1)
