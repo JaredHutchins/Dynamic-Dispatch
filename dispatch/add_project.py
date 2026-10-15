@@ -42,7 +42,37 @@ def _answers(cfg):
     old = cfg['projects'].get(name)
     if old and old['github_repo'].lower() != repo.lower():
         raise SetupError('That configured project uses a different repository; nothing was changed.')
-    return name, repo, command, enabled
+    return name, repo, command, enabled, _docs(old or {})
+
+
+def _patterns(question, current):
+    """A comma-separated list of path patterns; Enter keeps the offered ones, 'none' clears them."""
+    answer = input(f"{question} [{', '.join(current) or 'none'}]: ").strip()
+    if not answer:
+        return current
+    if answer.lower() == 'none':
+        return []
+    patterns = [p.strip() for p in answer.split(',') if p.strip()]
+    if any(p.startswith('/') for p in patterns):
+        raise SetupError('Give path patterns relative to the repository, such as docs/**.')
+    return patterns
+
+
+def _docs(old):
+    """The Docs line settings, offering what the project already has or else the defaults."""
+    current = config.docs(old)
+    offered = 'Y/n' if current['check'] else 'y/N'
+    answer = input(f'Check that every pull request updates its documentation or says why not? [{offered}]: ').strip().lower()
+    if answer not in ('', 'n', 'no', 'y', 'yes'):
+        raise SetupError('Answer yes or no for the documentation check.')
+    check = current['check'] if not answer else answer in ('y', 'yes')
+    if not check:
+        return dict(current, check=False)
+    documentation = _patterns('Files that count as documentation', current['documentation'])
+    if not documentation:
+        raise SetupError('Name at least one documentation path, or turn the documentation check off.')
+    exempt = _patterns('Changes that never need documentation', current['exempt'])
+    return {'check': True, 'documentation': documentation, 'exempt': exempt}
 
 
 def _github(cfg, repo):
@@ -125,7 +155,7 @@ def _members(cfg, client, project_id, enabled):
             client.add_member(project_id, user_id, role)
 
 
-def _settings(cfg, old, repo, command, enabled, project, states, labels, branch):
+def _settings(cfg, old, repo, command, enabled, docs, project, states, labels, branch):
     """The project's settings, merged over what config.json holds (not the defaults loading adds)."""
     parents = {str(Path(p['repo_path']).parent) for p in cfg['projects'].values()}
     roots = {p['worktree_root'] for p in cfg['projects'].values()}
@@ -140,7 +170,7 @@ def _settings(cfg, old, repo, command, enabled, project, states, labels, branch)
                   worktree_root=old.get('worktree_root', root), base_branch=branch,
                   agents=list(cfg['agents']), verify_command=command, states=states,
                   agent_label_id=labels['Agent'], human_only_label_id=labels['Human'],
-                  carried_over_label_id=labels['Carried Over'])
+                  carried_over_label_id=labels['Carried Over'], docs=docs)
     if enabled:
         result['cycles'] = dict(old.get('cycles', {}), product_backlog_state=states['product_backlog'],
                                 sprint_backlog_state=states['sprint_backlog'],
@@ -160,7 +190,7 @@ def run(path=None):
         cfg = config.load(path, allow_empty_projects=True)
         redact.configure(cfg)
         stage = 'reading project details; check the repository format and test command quoting'
-        name, repo, command, enabled = _answers(cfg)
+        name, repo, command, enabled, docs = _answers(cfg)
         stage = 'checking GitHub access'
         url, branch = _github(cfg, repo)
         stage = 'setting up Plane; check account access and project administration permissions'
@@ -172,7 +202,7 @@ def run(path=None):
         states, labels = _board(client, project['id'])
         _members(cfg, client, project['id'], enabled)
         saved = json.loads(original)['projects'].get(name, {})
-        settings = _settings(cfg, saved, repo, command, enabled, project, states, labels, branch)
+        settings = _settings(cfg, saved, repo, command, enabled, docs, project, states, labels, branch)
         stage = 'cloning code; check the code directory, Git filters and saved push login'
         gitops.clone_project(settings['repo_path'], url)
         if saved == settings:

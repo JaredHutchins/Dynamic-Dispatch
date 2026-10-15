@@ -254,6 +254,12 @@ The Plane accounts must already belong to the workspace, and Orchestrator must
 be allowed to create projects and administer project members. The installed
 Plane API must support adding members with `POST .../projects/{id}/members/`.
 
+Setup then offers the documentation check (see "Documentation in every pull
+request" below). Press Enter to keep each offered answer: the check on,
+`README.md, docs/**` as documentation and `tests/**, test/**` as never needing
+it, or what the project already has saved. Type comma-separated patterns to
+change a list, `none` to empty the exempt list, or `n` to turn the check off.
+
 Setup creates the seven DD columns and three labels and adds Orchestrator and
 all configured agents; Cycles also adds the configured approver. It asks before
 using a same-name Plane project. A new project's work item prefix comes from
@@ -280,6 +286,43 @@ reusing the Plane project when prompted.
 Doctor runs for the saved project and reports outstanding setup checks. Install
 any needed test tools yourself, confirm dependencies under the agent accounts,
 and restart DD when ready. Setup never installs software or runs repository tests.
+
+## Documentation in every pull request
+
+Every pull request either updates the project's documentation or says why none
+is needed. The agent ends its summary, which becomes the pull request
+description, with one of these lines:
+
+    Docs: updated README.md, docs/setup.md
+    Docs: none needed, because the change only renames an internal helper.
+
+Before the pull request is opened or updated, DD compares the line with the
+files the branch changes. Each file named as updated must be changed and count
+as documentation, and a reason can't be blank. A branch that changes anything
+outside the documentation and exempt paths needs the line; one that only
+changes tests or documentation may leave it out. A missing or wrong line goes
+back to the agent, with a comment on the story, like failing tests: two tries,
+then Blocked with nothing pushed. Every rework round needs its own line. DD's
+own "combine with main" commits never count, and Fix main stories follow the
+same rule.
+
+The optional `docs` setting in a project's `config.json` entry chooses the
+paths. `**` matches any number of folders, `*` and `?` stay within one, and
+paths start at the repository root:
+
+```json
+"docs": {
+  "check": true,
+  "documentation": ["README.md", "docs/**"],
+  "exempt": ["tests/**", "test/**"]
+}
+```
+
+Those are the defaults when the setting, or any part of it, is left out. Set
+`"check": false` to turn the check off for a project; agents are then not
+asked for the line. `--add-project` offers these values and saves your
+answers. To change them later, edit the setting as in "Adding a new setting"
+and restart DD.
 
 ## Install service files (manual reference)
 

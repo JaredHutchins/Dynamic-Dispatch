@@ -22,7 +22,7 @@ from datetime import date, datetime, timezone
 import json
 import sqlite3
 
-from . import alerts, agents, assessments, choose, combine, config, github, gitops, mainhealth, plane, prompts, rework, runs, sync, verify
+from . import alerts, agents, assessments, choose, combine, config, docs_line, github, gitops, mainhealth, plane, prompts, rework, runs, sync, verify
 from .redact import log, scrub, warn
 from .stories import story_ref
 
@@ -56,6 +56,7 @@ FINISHED_WORK_NOTE = (
 
 
 UNFINISHED_LIMIT = 50 * 1024  # bytes of unfinished changes shown to the agent
+DOCS_TRIES = 2  # times an agent is sent back to fix its Docs line
 
 
 def _earlier_agent(cfg, conn, run):
@@ -400,7 +401,8 @@ def _build(ctx, title, issue, rework_pr, saved, group):
             unfinished = gitops.unfinished_changes(ctx.repo, ctx.worktree, UNFINISHED_LIMIT)
         except gitops.GitError as e:
             return ctx.fail(f"Could not hand on the unfinished changes:\n\n{e}")
-        prompt = prompts.build_prompt(ctx.project_cfg, issue) + rework.prompt(rework_pr)
+        prompt = (prompts.build_prompt(ctx.project_cfg, issue) + rework.prompt(rework_pr)
+                  + docs_line.instruction(config.docs(ctx.project_cfg), rework=bool(rework_pr)))
         if ctx.pulled_out:
             prompt += FINISHED_WORK_NOTE
         if unfinished:
@@ -436,6 +438,8 @@ def _build(ctx, title, issue, rework_pr, saved, group):
             return
         if outcome:
             return ctx.fail(outcome)
+        if not _check_docs(ctx, issue, rework_pr):
+            return
 
     if mainhealth.hold(ctx.cfg, ctx.conn, ctx.run, ctx.worktree, ctx.result):
         return
@@ -459,6 +463,64 @@ def _build(ctx, title, issue, rework_pr, saved, group):
     if ctx.resuming or ctx.retrying_pr:
         ctx.combined_note = runs.combined_note(ctx.conn, ctx.run["issue_id"]) or ""
     return True
+
+
+def _check_docs(ctx, issue, rework_pr):
+    """Send the agent back until its Docs line fits the branch's changes, at most DOCS_TRIES times.
+
+    Checked before verification and the commit, so a fix is tested and saved
+    like the rest of the work, and saved or held work has already passed.
+    Return True to carry on, or None when the run stops here.
+    """
+    settings = config.docs(ctx.project_cfg)
+    name = ctx.agent_cfg["display_name"]
+    attempt = 0
+    while True:
+        try:
+            changed = gitops.branch_changed_files(ctx.repo, ctx.worktree, ctx.base)
+        except gitops.GitError as e:
+            return ctx.fail(f"Could not list the branch's changes to check the Docs line:\n\n{e}")
+        found = docs_line.problem(settings, ctx.result.get("summary"), changed)
+        if found is None:
+            return True
+        ctx.event("docs_line_wrong", found)
+        if attempt >= DOCS_TRIES:
+            return ctx.fail(f"The summary's Docs line was still wrong after {DOCS_TRIES} tries, so no "
+                            f"pull request was opened or updated:\n\n{found}")
+        attempt += 1
+        message = f"{found} Sent back to {name} to fix (try {attempt} of {DOCS_TRIES})."
+        try:
+            sync.notice(ctx.cfg, ctx.run["project"], ctx.run["issue_id"], f"run {ctx.run['id']} docs {attempt}", message)
+        except plane.PlaneError as e:
+            ctx.event("warning", f"Could not post the comment about the Docs line; carrying on: {e}")
+        ctx.event("sent_back", message)
+        prompt = (prompts.build_prompt(ctx.project_cfg, issue) + docs_line.instruction(settings)
+                  + docs_line.send_back_note(settings, found, changed, scrub(ctx.result.get("summary") or "")))
+        ctx.event("agent_started", f"Docs line fix started: {name}")
+        result = None
+        try:
+            result = agents.run(ctx.cfg, ctx.agent_cfg, prompt, ctx.worktree)
+        finally:
+            ctx.event("agent_finished", "Docs line fix finished" if result else "Docs line fix stopped unexpectedly")
+        runs.record_usage(ctx.conn, ctx.run["id"], ctx.run["agent"], result.get("usage"), result.get("cost_usd"),
+                          additive=True)
+        if result.get("usage_limit"):
+            return ctx.limited(result)
+        if not result["ok"]:
+            return ctx.fail(f"{name} did not finish fixing the Docs line:\n\n{result.get('error')}")
+        # A decision request made earlier in the round still stands.
+        result["needs_decision"] = ctx.result.get("needs_decision", False)
+        ctx.result = result
+        try:
+            ctx.changed = gitops.has_changes(ctx.repo, ctx.worktree)
+        except gitops.GitError as e:
+            return ctx.fail(f"Could not inspect the worktree:\n\n{e}")
+        outcome = rework.finish(ctx.cfg, ctx.conn, ctx.run, result, ctx.changed, ctx.pulled_out, rework_pr, ctx.worktree)
+        if outcome == rework.NEEDS_DECISION:
+            sync.reconcile(ctx.cfg, ctx.conn, runs.get(ctx.conn, ctx.run["id"]))
+            return
+        if outcome:
+            return ctx.fail(outcome)
 
 
 def execute(cfg, conn, run):

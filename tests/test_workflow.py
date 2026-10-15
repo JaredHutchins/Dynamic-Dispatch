@@ -145,7 +145,8 @@ class ReworkedDescriptions(Base):
         self.assertEqual(row["status"], runs.DONE, row)
         self.assertEqual(len(prs), 1)
         self.assertEqual(prs["dd-7"]["body"],
-                         "Changed things second round\n\n---\nStory 7: Add a value\nAgent: Claude")
+                         "Changed things second round\n\nDocs: none needed, because the fake change has "
+                         "nothing to document.\n\n---\nStory 7: Add a value\nAgent: Claude")
         [(number, comment)] = pr_comments
         self.assertEqual(number, "1")
         self.assertRegex(comment, rf"^Previous description, replaced by run {row['id']} on "

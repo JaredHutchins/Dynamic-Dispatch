@@ -70,6 +70,12 @@
       "branch_prefix": "dd",
       "verify_command": ["python3", "-m", "unittest", "discover", "-s", "tests"],
       "definition_of_done_path": "DEFINITION_OF_DONE.md",
+      "docs": {
+        "check": true,
+        "documentation": ["README.md", "ARCHITECTURE.md", "SECURITY.md", "DEFINITION_OF_DONE.md",
+                          "REVIEW_RUBRIC.md", "STORY_TEMPLATE.md", "deploy/*.md"],
+        "exempt": ["tests/**"]
+      },
       "human_only_label_id": "PLANE_HUMAN_LABEL_ID",
       "agent_label_id": "PLANE_AGENT_LABEL_ID",
       "states": {

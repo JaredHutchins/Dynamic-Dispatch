@@ -341,6 +341,20 @@ def unfinished_changes(repo, worktree, limit):
 
 
 @_serialized
+def branch_changed_files(repo, worktree, base_branch):
+    """Every path the story changes, committed or not, compared with where it last met main.
+
+    Read-only. The comparison starts at the merge base with origin's base
+    branch, so main's work merged into the branch is left out and only the
+    story's own changes are listed. Untracked files count; ignored ones don't.
+    """
+    since = _in_worktree(repo, worktree, ["merge-base", "HEAD", f"refs/remotes/origin/{base_branch}"]).stdout.strip()
+    tracked = _in_worktree(repo, worktree, ["diff", "--name-only", "-z", "--no-renames", since, "--"]).stdout
+    untracked = _in_worktree(repo, worktree, ["ls-files", "--others", "--exclude-standard", "-z"]).stdout
+    return sorted({path for path in (tracked + "\0" + untracked).split("\0") if path})
+
+
+@_serialized
 def restore_unfinished(repo, worktree, branch, leftover, group=None):
     """Put the changes saved on leftover back into branch's fresh worktree, uncommitted.
 

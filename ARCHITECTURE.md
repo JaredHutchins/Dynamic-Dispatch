@@ -343,6 +343,16 @@ Nonzero exit sends the story to Blocked with the output on the item. It never re
 
 Verification protects the scarcest resource, human review attention; it does not replace code review. Together with the PR flow and the privilege separation in §10, it is why pointing DD at a repo that matters is reasonable.
 
+### Docs line
+
+Every pull request either updates the project's documentation or says why none is needed, so documentation never falls behind the code. The build and rework prompts tell the agent to end its summary with one of two lines, `Docs: updated <files>` or `Docs: none needed, because <reason>`, and say which paths count. The rules live in `dispatch/docs_line.py`; the worker applies them.
+
+A project's optional `docs` setting holds `check` (on unless set to `false`), `documentation` and `exempt`, both lists of path patterns from the repository root where `**` spans folders and `*` and `?` stay within one. Left out, documentation is `README.md` and `docs/**`, and `tests/**` and `test/**` are exempt; `config.docs` fills in whatever a project leaves out. With the check off, prompts don't mention the line and nothing is checked.
+
+DD checks the line right after the agent finishes, before verification, so a fix is tested and committed like the rest of the work. Only the summary's last non-blank line counts; bold or code formatting around it is ignored. The line is compared with every file the branch changes since it last met main (`gitops.branch_changed_files`: committed, uncommitted and untracked, but not ignored), so files that came in through DD's own "combine with main" commits never count. Each file named as updated must be among them and count as documentation; a reason must not be blank. A branch that changes anything outside the documentation and exempt paths needs the line; one that changes only those paths may leave it out, but a line it gives is still checked.
+
+A missing or wrong line is sent back to the same agent like failing tests: an Orchestrator comment marked with the run and try, then a prompt with the story, what was wrong, the changed files and the earlier summary, asking for the complete summary again. Two tries per run, then Blocked, with nothing pushed and no pull request opened or updated. Usage limits and failures during a fix behave as in the first build, the fix's usage is added to the run, and a decision request made earlier in the round still stands. Every rework round gives its own line, checked against the whole branch as it is then. Fix main stories are ordinary story runs and follow the same rule. Refreshes, resumed work and pull request retries run no agent and are not checked again: their work was checked before it was committed.
+
 ### Concurrency: one run per agent account at a time
 
 Claude and Codex can build different stories simultaneously. Each agent's `max_concurrent` defaults to 1; startup rejects every other value. Reaping kills everything owned by that agent's account, so two runs on the same account would kill each other. Higher concurrency needs an account or container per run first.
@@ -548,7 +558,9 @@ neither doctor nor the start command suggests setup finished.
 `python3 main.py --add-project` coordinates onboarding in `dispatch/add_project.py`.
 GitHub repository creation and access grants remain manual prerequisites. Setup
 uses the configured App and host Git login to check access, then discovers or
-creates Plane resources by name and members by account ID. It asks before reusing
+creates Plane resources by name and members by account ID. It offers the Docs line
+setting (on, with the default documentation and exempt paths, or the project's saved
+ones) and lets the maintainer change or turn it off. It asks before reusing
 a project and never deletes or renames remote resources. Re-running after a
 partial failure uses the same discovery rather than an events-table checkpoint.
 Git cloning stays behind `gitops`; completed clones take the projects folder's

@@ -34,6 +34,13 @@ CYCLE_NUMBERS = {
     "blocked_reminder_minutes": (60, 1),
 }
 DEFAULT_BLOCKED_SOUND = "telegraph"
+# Path patterns for the Docs line check: what counts as documentation, and
+# what never needs it. ** spans folders; * and ? stay within one.
+DEFAULT_DOCS = {
+    "check": True,
+    "documentation": ["README.md", "docs/**"],
+    "exempt": ["tests/**", "test/**"],
+}
 
 
 class ConfigError(Exception):
@@ -179,6 +186,7 @@ def load(path=None, *, allow_empty_projects=False):
                 )
 
     _check_cycles(cfg)
+    _check_docs(cfg)
     cooldown_minutes(cfg)
     return cfg
 
@@ -224,6 +232,35 @@ def _check_cycles(cfg):
         raise ConfigError("plane approver_user_id must be the approver's Plane user ID, or left out")
     if sprint_pull and approver is None:
         raise ConfigError("plane is missing: approver_user_id (sprint-pull needs the approver's Plane user ID)")
+
+
+def _check_docs(cfg):
+    """Validate each project's optional Docs line settings; docs() fills in the defaults."""
+    for name, project in cfg["projects"].items():
+        if "docs" not in project:
+            continue
+        settings = project["docs"]
+        where = f"project '{name}' docs"
+        if not isinstance(settings, dict):
+            raise ConfigError(f"{where} must be an object with check, documentation and exempt")
+        unknown = sorted(set(settings) - set(DEFAULT_DOCS))
+        if unknown:
+            raise ConfigError(f"{where} has unknown settings: {', '.join(unknown)}")
+        if not isinstance(settings.get("check", True), bool):
+            raise ConfigError(f"{where} check must be true or false")
+        for key in ("documentation", "exempt"):
+            patterns = settings.get(key, [])
+            if not isinstance(patterns, list) or not all(
+                    isinstance(p, str) and p.strip() and not p.startswith("/") for p in patterns):
+                raise ConfigError(f"{where} {key} must be a list of path patterns relative to the repository")
+        if settings.get("check", True) and not settings.get("documentation", True):
+            raise ConfigError(f"{where} documentation must name at least one pattern while the check is on")
+
+
+def docs(project_cfg):
+    """A project's Docs line settings, with the defaults for anything it leaves out."""
+    settings = dict(DEFAULT_DOCS, **project_cfg.get("docs", {}))
+    return dict(settings, documentation=list(settings["documentation"]), exempt=list(settings["exempt"]))
 
 
 def cycles(project_cfg):
