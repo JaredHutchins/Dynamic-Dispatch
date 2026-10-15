@@ -63,10 +63,25 @@ def record_done_story(conn, project, issue_id):
                      (now(), project, issue_id))
 
 
-def done_durations(conn, project, limit):
-    """Seconds from first run to Done for the project's latest limit Done stories."""
-    rows = conn.execute("SELECT started, done FROM done_stories WHERE project = ? ORDER BY done DESC LIMIT ?",
+def done_durations(conn, project, limit, *, with_sizes=False):
+    """First-run-to-Done seconds for recent stories, optionally paired with their saved plan size.
+
+    Unsized stories remain available for the estimate's fallback weighting.
+    """
+    rows = conn.execute("SELECT issue_id, started, done FROM done_stories WHERE project = ? ORDER BY done DESC LIMIT ?",
                         (project, limit)).fetchall()
     seconds = [(datetime.fromisoformat(r['done']) - datetime.fromisoformat(r['started'])).total_seconds()
                for r in rows]
-    return [s for s in seconds if s >= 0]
+    if not with_sizes:
+        return [s for s in seconds if s >= 0]
+    # Newest saved plan wins if a story has been assessed in several rounds.
+    sizes = {}
+    reports = conn.execute("SELECT merged FROM plan_reports WHERE project = ? ORDER BY snapshot_id DESC",
+                           (project,)).fetchall()
+    for report in reports:
+        for sid, story in json.loads(report['merged']).get('merged', {}).get('stories', {}).items():
+            recorded = [size for size in story.get('sizes', {}).values() if size in ('S', 'M', 'L')]
+            if recorded and sid not in sizes:
+                sizes[sid] = max(recorded, key=('S', 'M', 'L').index)
+    return [{'seconds': duration, 'size': sizes.get(row['issue_id'])}
+            for row, duration in zip(rows, seconds) if duration >= 0]

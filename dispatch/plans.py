@@ -106,7 +106,7 @@ def make_report(conn, name, snapshot, items, cfg):
     """Merge the round's answers and estimate the fit, then save both so every retry posts the same report."""
     answers = {item["agent"]: json.loads(item["answer"]) for item in items}
     merged = plan_report.merge(json.loads(snapshot["stories"]), answers)
-    estimate = plan_report.estimate(merged, runs.done_durations(conn, name, plan_report.HISTORY), len(answers),
+    estimate = plan_report.estimate(merged, runs.done_durations(conn, name, plan_report.HISTORY, with_sizes=True), len(answers),
                                     snapshot["end_date"], datetime.now().astimezone(), snapshot["start_date"])
     names = {agent: cfg.get("agents", {}).get(agent, {}).get("display_name", agent) for agent in answers}
     report = plan_report.render(merged, estimate, names, snapshot["round"])

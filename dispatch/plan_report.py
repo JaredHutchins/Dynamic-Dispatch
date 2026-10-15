@@ -103,25 +103,43 @@ def disagreements(merged):
 
 
 def finish(merged, keep, unit, agents, now):
-    """When the kept stories would be done: the work spread over agents, never shorter than the longest chain.
-
-    Whatever a kept story depends on is counted too, so a dependency is never
-    dropped from the chain just because its story was left out of keep.
-    """
+    """Schedule kept stories over agents, serializing dependencies and overlaps."""
     needed = set(keep).union(*(reaches(merged['stories'], sid) for sid in keep))
-    work = {sid: unit * statistics.fmean(WEIGHTS[size] for size in merged['stories'][sid]['sizes'].values())
-            for sid in needed}
-    chain = {}
+    durations = unit if isinstance(unit, dict) else {size: unit * weight for size, weight in WEIGHTS.items()}
+    slots = [0] * agents
+    ends, chain = {}, {}
     for sid in merged['order']:
-        if sid in work:
-            chain[sid] = work[sid] + max((chain[d] for d in merged['stories'][sid]['depends_on'] if d in chain),
-                                         default=0)
-    longest = max(chain.values(), default=0)
-    seconds = max(sum(work.values()) / agents, longest)
+        if sid not in needed:
+            continue
+        story = merged['stories'][sid]
+        size = max(story['sizes'].values(), key=WEIGHTS.get)
+        chain[sid] = durations[size] + max((chain[d] for d in story['depends_on'] if d in chain), default=0)
+        conflicts = set(story['depends_on']) | set(story['overlaps'])
+        conflicts.update(other for other in ends if sid in merged['stories'][other]['overlaps'])
+        ready = max((ends[other] for other in conflicts if other in ends), default=0)
+        slot = min(range(agents), key=slots.__getitem__)
+        ends[sid] = max(ready, slots[slot]) + durations[size]
+        slots[slot] = ends[sid]
+    seconds = max(ends.values(), default=0)
     at = now + timedelta(seconds=seconds)
-    # The date is shown in DD's local time; fit compares the exact moment.
-    return {'days': round(seconds / 86400, 1), 'chain_days': round(longest / 86400, 1),
+    return {'days': round(seconds / 86400, 1), 'chain_days': round(max(chain.values(), default=0) / 86400, 1),
             'finish': at.astimezone().date().isoformat(), 'finish_at': at.isoformat()}
+
+
+def duration_models(history):
+    """Per-size median and nearest-rank 80th percentile; sparse sizes retain the old weights."""
+    samples = [row if isinstance(row, dict) else {'seconds': row, 'size': None} for row in history]
+    all_times = sorted(row['seconds'] for row in samples)
+    sparse, likely, slow = [], {}, {}
+    for size, weight in WEIGHTS.items():
+        times = sorted(row['seconds'] for row in samples if row['size'] == size)
+        if len(times) < 3:
+            sparse.append(size)
+            times = [seconds * weight for seconds in all_times]
+        if times:
+            likely[size] = statistics.median(times)
+            slow[size] = times[(4 * len(times) + 4) // 5 - 1]
+    return likely, slow, sparse
 
 
 def pushable(merged, sid):
@@ -136,22 +154,26 @@ def pushable(merged, sid):
 def estimate(merged, durations, agents, end_date, now, start_date=None):
     """DD's rough finish from its own history, and the stories to push if that passes end_date.
 
-    durations are seconds from first run to Done for recent Done stories. With
-    none there is no estimate, only the count of zero. The finish counts from
+    History contains first-run-to-Done seconds and recorded sizes; bare seconds
+    are unsized history. With none there is no estimate. The finish counts from
     the later of now and start_date, the Cycle's start.
     """
     # A Cycle planned in advance can only start its work at its start moment.
     if start_date:
         now = max(now, cycle_dates.moment(start_date))
     end = cycle_dates.moment(end_date, end=True) if end_date else None
-    result = {'based_on': len(durations), 'agents': agents,
+    likely, slow, sparse = duration_models(durations)
+    result = {'fallback_sizes': sparse, 'based_on': len(durations), 'agents': agents,
               'end_date': cycle_dates.local_date(end_date)}
     if not durations:
         return result
-    unit = statistics.median(durations)
+    unit = likely
+    median = statistics.median(row['seconds'] if isinstance(row, dict) else row for row in durations)
     keep = list(merged['order'])
-    result.update(finish(merged, keep, unit, agents, now), median_hours=round(unit / 3600, 1))
+    result.update(finish(merged, keep, unit, agents, now), median_hours=round(median / 3600, 1))
     result['fits'] = None if not end_date else cycle_dates.moment(result['finish_at']) <= end
+    result['slow'] = finish(merged, keep, slow, agents, now)
+    result['slow']['fits'] = None if end is None else cycle_dates.moment(result['slow']['finish_at']) <= end
     if result['fits'] is not False:
         return result
     pushed, after = [], result
@@ -181,20 +203,22 @@ def story_names(merged, ids):
 
 
 def fit_lines(est):
+    sparse = ', '.join(est.get('fallback_sizes', WEIGHTS)) or 'none'
     if not est['based_on']:
-        return ["DD has no Done stories to estimate from yet, so it can't say whether this Cycle fits its dates."]
-    stories = 'story' if est['based_on'] == 1 else 'stories'
-    lines = [f"Rough estimate: about {est['days']} days, finishing around {est['finish']}.",
-             f"This is rough. It is based on {est['based_on']} past {stories}: the median time from a story's "
-             f"first run to Done ({est['median_hours']} hours), weighted S 0.5, M 1, L 2, spread over "
-             f"{est['agents']} {'agent' if est['agents'] == 1 else 'agents'} and never shorter than the longest "
-             f"chain of dependencies ({est['chain_days']} days)."]
-    if est['fits'] is None:
-        lines.append("The Cycle has no end date to compare with.")
-    elif est['fits']:
-        lines.append(f"That fits the Cycle's end date, {est['end_date']}.")
-    else:
-        lines.append(f"That passes the Cycle's end date, {est['end_date']}.")
+        return ["DD has no Done stories to estimate from yet. Likely and slow figures, finish dates and "
+                "fit are unknown. Too little size history: " + sparse + ". The fallback weights are "
+                "S 0.5, M 1, L 2, but there is no historical duration to weight."]
+    lines = []
+    for label, figure in [('Likely', est), ('Slow', est['slow'])]:
+        outcome = ("No Cycle end date to compare with." if figure['fits'] is None else
+                   f"{'That fits' if figure['fits'] else 'That passes'} the Cycle's end date, {est['end_date']}.")
+        lines.append(f"{label}: about {figure['days']} days, finishing around {figure['finish']}. {outcome}")
+    lines.append(f"This is rough. It is based on {est['based_on']} past stories: first run to Done, "
+                 "using each recorded size's median for likely and 80th percentile for slow, and the larger "
+                 "size when agents disagree. Sizes with fewer than 3 finished stories use the overall "
+                 "median or 80th percentile weighted S 0.5, M 1, L 2. Too little size history: "
+                 f"{sparse}. Work is scheduled over {est['agents']} agents from the later of now and the "
+                 "Cycle start; dependencies and overlapping stories run one after another.")
     return lines
 
 
