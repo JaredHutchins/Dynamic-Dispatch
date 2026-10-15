@@ -287,10 +287,23 @@ first installation.
 
 On each start, the root start step installs the launcher and sudoers from
 DD's checkout before dropping to `dd`. That checkout is trusted executable
-code. Updates needing changed installed deployment files can be held for
-manual installation; see [Updating itself](README.md#updating-itself-after-a-merge).
-Image, Compose and container-start changes require an updated host checkout
-and `dc up -d --build`; rebuilding does not replace the persistent DD checkout.
+code. An update that changes those installed files is never held back: DD
+updates its checkout and restarts as for a code update, and the start step's
+installer installs the new files before DD starts. If the installer fails, the
+start counts as a failure, and recovery returns DD to its last good version
+and logs why (see troubleshooting). Because of the planned-restart
+exemption, that can take up to five minutes after the update's restart.
+
+Image, Compose and container-start changes (`deploy/Dockerfile`,
+`deploy/compose.yaml` and `deploy/dd-container-start`) take effect only when
+the image is rebuilt. DD sends one alert for each such update and carries on
+with the new checkout meanwhile. To rebuild, update the host checkout and
+rebuild; rebuilding does not replace the persistent DD checkout:
+
+```sh
+git pull
+dc up -d --build
+```
 
 To see the version actually reported by DD's last polling cycle and its time:
 
@@ -354,7 +367,7 @@ rm "$HOME/Library/LaunchAgents/local.dd.awake.plist"
 | Doctor reports sudo, group or env failures | Confirm setup selected only Gemini, env ownership is `root:dd-gemini` and mode is 640. Restart to rerun the container installer; inspect its log before changing sandbox permissions. |
 | Tests cannot find a tool | Supply the project's test dependencies in the container; installing them on the host does not install them for Gemini. Ad-hoc container installs disappear on recreation. |
 | No stories start | Check a fresh heartbeat, doctor results, Plane state/assignment, GitHub main checks and quota cooldown. The Mac or container runtime may have slept. |
-| No update arrives | Check exact-main GitHub Actions results, network/rate-limit warnings, active runs and any deployment-file hold in logs. |
+| No update arrives | Check exact-main GitHub Actions results, network/rate-limit warnings and active runs in logs. |
 
 Three failures within five minutes trigger recovery. DD can roll back to the
 last version that ran for ten minutes; if recovery cannot restore service,

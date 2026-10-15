@@ -2,11 +2,12 @@
 
 import io
 import json
+import os
 import sys
 from pathlib import Path
 from unittest import mock
 
-from dispatch import alerts, github, gitops, plane, publicupdate, runs, selfupdate
+from dispatch import alerts, container, github, gitops, plane, publicupdate, runs, selfupdate
 import main as dd_main
 from helpers import Base, GH, ORCH, S_REV, board, git
 
@@ -16,6 +17,9 @@ class SelfUpdate(Base):
         super().setUp()
         selfupdate._waiting.update(target=None, idle=False)
         selfupdate._named.update(key=None, title=None)
+        # Outside a container unless a test says otherwise, whatever runs the tests.
+        self.enterContext(mock.patch.dict(os.environ))
+        os.environ.pop(container.MARKER, None)
         self.checkout = self.tmp / "dd"
         git("clone", str(self.origin), str(self.checkout), cwd=self.tmp)
         self.started = self.head()
@@ -554,6 +558,64 @@ class SelfUpdate(Base):
         self.assertFalse(self.cycle())
         self.assertEqual(self.head(), target)
         self.assertEqual(self.sent, [])
+
+    def test_installed_files_in_a_container_restart_for_the_start_step_to_install(self):
+        os.environ[container.MARKER] = "1"
+        target = self.merge(["deploy/dd-agent-run", "deploy/sudoers-dynamic-dispatch"], "Tighter launcher")
+        self.main_green(target)
+        self.assertFalse(self.cycle())  # pending: no new work, then one idle cycle
+        self.assertEqual(self.new_work, [])
+        self.assertEqual(self.head(), self.started)
+        self.assertTrue(self.cycle())
+        self.assertEqual(self.head(), target)
+        self.assertEqual(self.sent, [])  # nothing to install by hand
+        self.assertEqual(self.events("self_update_refused"), [])
+        self.assertEqual(runs.claim_self_update_restart(self.conn)["revision"], target)
+
+    def test_the_same_installed_files_outside_a_container_are_still_held(self):
+        target = self.merge(["deploy/dd-agent-run", "deploy/sudoers-dynamic-dispatch"], "Tighter launcher")
+        self.main_green(target)
+        for _ in range(3):
+            self.assertFalse(self.cycle())
+        self.assertEqual(self.head(), self.started)
+        [(_, message, level)] = self.sent
+        self.assertEqual(level, "active")
+        self.assertIn("2. sudo python3 deploy/dd-install --agents claude", message)
+        self.assertIsNone(runs.claim_self_update_restart(self.conn))
+
+    def test_image_files_in_a_container_alert_once_to_rebuild_and_carry_on(self):
+        os.environ[container.MARKER] = "1"
+        target = self.merge(["deploy/Dockerfile", "deploy/dd-container-start", "deploy/CONTAINER.md"],
+                            "Newer base image")
+        self.main_green(target)
+        for _ in range(3):
+            self.assertFalse(self.cycle())
+        self.assertEqual(self.head(), target)  # the new checkout, without restarting
+        self.assertIn("poll_once", self.new_work)
+        [(project, message, level)] = self.sent
+        self.assertEqual((project, level), ("dd", "active"))
+        self.assertIn(f"DD is updating itself to {target[:12]} (Newer base image)", message)
+        self.assertIn("changes deploy/Dockerfile, deploy/dd-container-start.", message)
+        self.assertIn(f"git pull, then {selfupdate.REBUILD}", message)
+        self.assertIn("carries on with the new checkout", message)
+        self.assertNotIn("CONTAINER.md,", message)
+        self.assertEqual(len(self.events("self_update_rebuild")), 1)
+        self.assertIsNone(runs.claim_self_update_restart(self.conn))
+
+    def test_image_files_with_code_in_a_container_alert_once_then_restart(self):
+        os.environ[container.MARKER] = "1"
+        target = self.merge(["deploy/compose.yaml", "dispatch/worker.py"])
+        self.main_green(target)
+        self.assertFalse(self.cycle())
+        self.assertTrue(self.cycle())
+        self.assertEqual(self.head(), target)
+        [(_, message, _)] = self.sent
+        self.assertIn("changes deploy/compose.yaml.", message)
+
+    def test_the_rebuild_command_is_the_guides(self):
+        guide = (Path(__file__).resolve().parents[1] / "deploy" / "CONTAINER.md").read_text()
+        self.assertIn(f"git pull\n{selfupdate.REBUILD}\n", guide)
+        self.assertIn('dc() { docker compose -f deploy/compose.yaml', guide)
 
     def test_installer_updates_without_restarting(self):
         target = self.merge(["deploy/dd-install"])

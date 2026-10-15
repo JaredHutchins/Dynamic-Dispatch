@@ -9,7 +9,7 @@ from ..redact import scrub
 
 
 def claim_self_update_notice(conn, revision, reason):
-    """Mark the alert about not updating DD to revision for this reason. False if it was already sent."""
+    """Mark the alert about DD's update to revision for this reason. False if it was already sent."""
     with conn:
         return conn.execute("INSERT OR IGNORE INTO self_update_notices VALUES (?, ?)",
                             (revision, reason)).rowcount == 1
