@@ -1,11 +1,12 @@
 """DD updating itself after a merge to its own code, once main's tests pass on it."""
 
+import io
 import json
 import sys
 from pathlib import Path
 from unittest import mock
 
-from dispatch import alerts, github, gitops, plane, runs, selfupdate
+from dispatch import alerts, github, gitops, plane, publicupdate, runs, selfupdate
 import main as dd_main
 from helpers import Base, GH, ORCH, S_REV, board, git
 
@@ -92,6 +93,129 @@ class SelfUpdate(Base):
     def events(self, kind):
         return [e["detail"] for e in runs.events(self.conn, project="dd", issue_id=selfupdate.STORY_ID)
                 if e["type"] == kind]
+
+    def public_update(self, revision):
+        del self.cfg["self_update"]
+        self.cfg["self_update_public_repo"] = "owner/public-dd"
+        publicupdate._cached.update(repo=None, after=0, target=None)
+        self.clock = self.enterContext(mock.patch.object(publicupdate.time, "monotonic", return_value=1000))
+        self.checks = [{"name": name, "head_sha": revision, "app": {"slug": "github-actions"},
+                        "status": "completed", "conclusion": "success"}
+                       for name in ("Tests", "Lint")]
+        def response(request, timeout):
+            self.assertNotIn("Authorization", request.headers)
+            self.assertEqual(timeout, 15)
+            self.assertTrue(request.full_url.startswith("https://api.github.com/repos/owner/public-dd/"))
+            data = {"sha": revision} if request.full_url.endswith("commits/main") else {
+                "total_count": len(self.checks), "check_runs": self.checks}
+            return io.BytesIO(json.dumps(data).encode())
+        return self.enterContext(mock.patch.object(publicupdate.urllib.request, "urlopen", side_effect=response))
+
+    def test_public_passed_updates_without_a_dd_project_and_blocks_new_work(self):
+        revision = self.merge(["dispatch/worker.py"])
+        api = self.public_update(revision)
+        del self.cfg["projects"]["dd"]
+        self.assertFalse(self.cycle())
+        self.assertEqual(self.new_work, [])
+        self.assertTrue(self.cycle())
+        self.assertEqual(self.head(), revision)
+        self.assertEqual(api.call_count, 2)
+        self.assertEqual(self.lookups, [])
+        selfupdate.announce(self.cfg, self.conn, revision)
+        self.assertIsNone(self.sent[-1][0])
+
+    def test_public_checks_wait_unless_all_pass(self):
+        revision = self.merge(["dispatch/worker.py"])
+        self.public_update(revision)
+        for status, conclusion in (("queued", None), ("in_progress", None),
+                                   ("completed", "failure"), ("completed", "cancelled"),
+                                   ("completed", "skipped"), ("completed", "neutral")):
+            with self.subTest(status=status, conclusion=conclusion):
+                self.checks[0].update(status=status, conclusion=conclusion)
+                self.clock.return_value += 300
+                self.assertIsNone(selfupdate.pending(self.cfg, self.conn, self.checkout))
+                self.assertEqual(self.head(), self.started)
+        self.checks.clear()
+        self.clock.return_value += 300
+        self.assertIsNone(selfupdate.pending(self.cfg, self.conn, self.checkout))
+        warnings = [e for e in runs.events(self.conn, issue_id=selfupdate.STORY_ID)
+                    if "GitHub tests did not pass" in e["detail"]]
+        self.assertEqual(len(warnings), 1)
+
+    def test_public_renamed_and_added_jobs_allow_update(self):
+        revision = self.merge(["main.py"])
+        self.public_update(revision)
+        self.checks[0]["name"] = "Renamed test job"
+        self.checks.append(dict(self.checks[0], name="Added test job"))
+        self.assertFalse(self.cycle())
+        self.assertTrue(self.cycle())
+        self.assertEqual(self.head(), revision)
+
+    def test_public_no_actions_checks_warns_once_per_commit(self):
+        revision = self.merge(["main.py"])
+        self.public_update(revision)
+        self.checks.clear()
+        with mock.patch.object(publicupdate, "warn") as warning:
+            for _ in range(2):
+                self.clock.return_value += 300
+                self.assertIsNone(selfupdate.pending(self.cfg, self.conn, self.checkout))
+            warning.assert_called_once()
+            self.assertIn("no GitHub Actions checks", warning.call_args.args[0])
+        warnings = [e for e in runs.events(self.conn, issue_id=selfupdate.STORY_ID)
+                    if "no GitHub Actions checks" in e["detail"]]
+        self.assertEqual(len(warnings), 1)
+
+    def test_public_wrong_source_waits(self):
+        revision = self.merge(["main.py"])
+        self.public_update(revision)
+        for field, value in (("app", {"slug": "another-app"}), ("head_sha", "0" * 40)):
+            checks = self.checks
+            self.checks = [dict(check, **{field: value}) for check in checks]
+            self.clock.return_value += 300
+            self.assertIsNone(selfupdate.pending(self.cfg, self.conn, self.checkout))
+            self.checks = checks
+
+    def test_public_other_apps_do_not_block_successful_actions(self):
+        revision = self.merge(["main.py"])
+        self.public_update(revision)
+        self.checks.append(dict(self.checks[0], app={"slug": "another-app"}, conclusion="failure"))
+        self.assertIsNotNone(selfupdate.pending(self.cfg, self.conn, self.checkout))
+
+    def test_public_running_work_waits_then_restarts(self):
+        revision = self.merge(["README.md"])
+        self.public_update(revision)
+        run_id = self.start_run()
+        self.assertFalse(self.cycle())
+        self.assertFalse(self.cycle())
+        self.assertEqual(self.head(), self.started)
+        self.assertEqual(self.new_work, [])
+        self.finish_run(run_id)
+        self.assertFalse(self.cycle())
+        self.assertTrue(self.cycle())
+        self.assertEqual(self.head(), revision)
+
+    def test_public_outage_warns_and_retries_after_interval(self):
+        revision = self.merge(["dispatch/worker.py"])
+        api = self.public_update(revision)
+        response = api.side_effect
+        api.side_effect = OSError("GitHub unreachable")
+        with mock.patch.object(selfupdate, "warn") as warning:
+            self.assertIsNone(selfupdate.pending(self.cfg, self.conn, self.checkout))
+            self.assertIsNone(selfupdate.pending(self.cfg, self.conn, self.checkout))
+            warning.assert_called_once()
+            self.assertIn("will retry", warning.call_args.args[0])
+        self.assertEqual(api.call_count, 1)
+        api.side_effect = response
+        self.clock.return_value += 300
+        self.assertIsNotNone(selfupdate.pending(self.cfg, self.conn, self.checkout))
+        self.assertEqual(api.call_count, 3)
+
+    def test_public_main_moving_on_waits_for_new_checks(self):
+        revision = self.merge(["dispatch/worker.py"])
+        self.public_update(revision)
+        self.merge(["main.py"])
+        self.assertIsNone(selfupdate.pending(self.cfg, self.conn, self.checkout))
+        self.assertEqual(self.head(), self.started)
 
     def test_waiting_comments_survive_polls_and_restart_and_later_update(self):
         self.cfg["projects"]["dd"]["plane_identifier"] = "DD"
