@@ -468,17 +468,28 @@ waits for its main check to pass on exactly main's latest commit. Then:
   poll, DD fast-forwards `$DD_CHECKOUT` to that commit and exits, and
   systemd starts it again on the new code. One silent alert then says
   "DD updated to <short commit> (<pull request title>)".
-- If only documents or tests changed, including this README and any other
-  `*.md` under `deploy/`, DD fast-forwards the checkout and keeps running.
-  These Markdown documents alongside code changes follow the normal code
-  update and restart path above.
-- If any non-Markdown file under `deploy/` changed, DD doesn't update, even
-  alongside code or document changes. Today these files are `dd-agent-run`,
-  `sudoers-dynamic-dispatch`, `dynamic-dispatch.service`, `dd-rollback` and
-  `dynamic-dispatch-rollback.service`; any non-Markdown
-  file added later also blocks the update. DD sends one alert with sound
-  naming only those files and the commands to run, from "When a deploy file
-  changes" below; run them to update by hand.
+- If only documents, tests or deploy files that run straight from the
+  checkout changed (such as `deploy/dd-install` and any `*.md`, this README
+  included), DD fast-forwards the checkout and keeps running. Alongside code
+  changes they follow the normal update and restart path above.
+- If a deploy file that is copied out of the checkout to be installed
+  changed, DD doesn't update, even alongside code or document changes.
+  `DEPLOY_FILES` in `dispatch/selfupdate.py` is the one list of which deploy
+  files are installed; a test fails if a file in `deploy/` isn't in it. A
+  new non-Markdown deploy file that the running DD doesn't know yet also
+  holds it back, to be safe. DD sends one alert with sound
+  naming the installed files that changed and giving three steps:
+
+      cd "$DD_CHECKOUT" && git pull
+      sudo python3 deploy/dd-install --agents <agents>
+      sudo systemctl restart dynamic-dispatch
+
+  Run them as DD's account, since the installer takes DD's account from
+  `sudo`. DD fills in `<agents>` from each configured agent's account
+  (`run_as`, or the sandbox user without it): `dd-agent` is `claude`,
+  `dd-codex` is `codex` and `dd-gemini` is `gemini`. If an account isn't one
+  of those, the alert says so and points to "When a deploy file changes"
+  below, the manual steps, instead.
 
 Self-update only fast-forwards the checkout, without merge commits or resets. If it has
 local changes, isn't on `main` (except an automatic rollback) or has commits `main`

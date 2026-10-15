@@ -7,13 +7,14 @@ checkout is behind the project's main and the main check found main green at
 exactly main's latest commit. Without the setting, DD never updates itself.
 
 What the update changes decides what happens:
-  - non-Markdown files under deploy/: DD never installs those, so
-    it sends one alert with the commands to run and waits to be updated by hand;
+  - deploy files DEPLOY_FILES lists as installed: DD sends one alert with the
+    steps to run deploy/dd-install and waits to be updated by hand;
   - dispatch/ or main.py: no new run starts while runs already going finish.
     Once a whole cycle has found nothing running, so alerts the last runs
     queued have gone, DD fast-forwards the checkout and exits with EXIT_CODE,
     and systemd (Restart=on-failure) starts it on the new code;
-  - anything else (documents, including *.md under deploy/, and tests): DD
+  - anything else (documents, including *.md under deploy/, tests, and deploy
+    files that run from the checkout, such as deploy/dd-install): DD
     fast-forwards the checkout and carries on, without restarting.
 
 A checkout with local changes, manually off main, or that can't be fast-forwarded is
@@ -22,14 +23,12 @@ them, record a warning and are retried on the next check; an update never
 fails a story.
 """
 
-import os
-import pwd
 import re
 import shlex
 import time
 from pathlib import Path
 
-from . import alerts, github, gitops, mainhealth, plane, runs, sync
+from . import alerts, config, github, gitops, mainhealth, plane, runs, sync
 from .redact import log, scrub, warn
 from .stories import story_ref
 
@@ -37,8 +36,21 @@ EXIT_CODE = 75  # EX_TEMPFAIL: nonzero, so systemd's Restart=on-failure starts D
 STORY_ID = "self-update"  # self-update events are kept under this, apart from any story
 TITLE_LIMIT = 200
 
-CODE_FOLDER, CODE_FILE = "dispatch/", "main.py"
-DEPLOY = "deploy/"
+CODE_FOLDER, CODE_FILE, DEPLOY = "dispatch/", "main.py", "deploy/"
+# The one list of how each deploy file reaches the machine: "installed" files are
+# copied out of the checkout, so a change to one waits for deploy/dd-install;
+# "checkout" files run from the checkout and "documentation" is only read, so
+# those update normally. A test fails if a file in deploy/ is missing here.
+DEPLOY_FILES = {
+    "deploy/dd-agent-run": "installed",
+    "deploy/dd-rollback": "installed",
+    "deploy/sudoers-dynamic-dispatch": "installed",
+    "deploy/dynamic-dispatch.service": "installed",
+    "deploy/dynamic-dispatch-rollback.service": "installed",
+    "deploy/dd-install": "checkout",
+    "deploy/README.md": "documentation",
+}
+INSTALLER_AGENTS = {"dd-agent": "claude", "dd-codex": "codex", "dd-gemini": "gemini"}
 
 # The pending update, and whether a cycle has already found nothing running for
 # it. In memory only: after a restart, DD just waits one more cycle.
@@ -101,11 +113,9 @@ def _check(cfg, conn, project, checkout):
     update = {"project": project, "checkout": checkout, "base": base, "head": head, "target": target,
               "title": _title(cfg, conn, project, checkout, target, head),
               "rollback": recovery.get("rolled_back")}
-    deploy = [name for name in state["files"] if name.startswith(DEPLOY) and not name.endswith(".md")]
+    deploy = sorted({name for name in state["files"] if _installed(name)})
     if deploy:
-        _refuse(cfg, conn, update, "deploy",
-                f"it changes {', '.join(deploy)}, which DD never installs. Update it by hand:\n\n"
-                + "\n".join(_commands(checkout, deploy)))
+        _refuse(cfg, conn, update, "deploy", _install_steps(cfg, checkout, deploy))
         return None
     if state["dirty"]:
         reason, problem = "local changes", (f"its checkout at {checkout} has local changes. "
@@ -125,8 +135,8 @@ def _check(cfg, conn, project, checkout):
         if _fast_forward(conn, update):
             _event(conn, project, "self_update",
                    f"Updated DD's checkout to {target[:12]} ({update['title']}); "
-                   "documents and tests only, so DD keeps running")
-            log(f"updated DD's checkout to {target[:12]}: documents and tests only, so no restart")
+                   "no running code changed, so DD keeps running")
+            log(f"updated DD's checkout to {target[:12]}: no running code changed, so no restart")
         return None
     return update
 
@@ -216,7 +226,11 @@ def _refuse(cfg, conn, update, reason, problem):
     project, target = update["project"], update["target"]
     if not runs.claim_self_update_notice(conn, target, reason):
         return
-    message = (f"DD didn't update itself to {target[:12]} ({update['title']}): {problem}\n\n"
+    title = update["title"]
+    # Leave room for the install steps, which a cut-off alert would lose.
+    if reason == "deploy" and len(title) > 40:
+        title = title[:39] + "…"
+    message = (f"DD didn't update itself to {target[:12]} ({title}): {problem}\n\n"
                f"It carries on with {update['head'][:12]}.")
     _event(conn, project, "self_update_refused", message)
     warn(message)
@@ -255,53 +269,33 @@ def _named_merges(cfg, conn, project, titles, numbers):
     return named
 
 
-def _commands(checkout, files):
-    """deploy/README.md's commands for these deploy files, in order."""
-    lines = [f"cd {shlex.quote(str(checkout))} && git pull"]
-    templates = {"deploy/dynamic-dispatch.service", "deploy/sudoers-dynamic-dispatch"}
-    if templates.intersection(files):
-        lines += [
-            f"export DD_USER={shlex.quote(pwd.getpwuid(os.geteuid()).pw_name)}",
-            f"export DD_CHECKOUT={shlex.quote(str(checkout))}",
-            'DD_DEPLOY_TMP="$(mktemp -d)"',
-            "export DD_DEPLOY_TMP",
-            """python3 - <<'RENDER'
-import os
-from pathlib import Path
+def _installed(name):
+    """Whether a changed file is installed. One this copy of DD doesn't know yet (a deploy file
+    added by the very merge being checked) counts as installed unless it's Markdown, to be safe."""
+    if not name.startswith(DEPLOY):
+        return False
+    return DEPLOY_FILES.get(name, "documentation" if name.endswith(".md") else "installed") == "installed"
 
-source = Path(os.environ['DD_CHECKOUT']) / 'deploy'
-target = Path(os.environ['DD_DEPLOY_TMP'])
-user = os.environ['DD_USER']
-checkout = os.environ['DD_CHECKOUT'].replace('%', '%%')
-service = (source / 'dynamic-dispatch.service').read_text()
-(target / 'dynamic-dispatch.service').write_text(
-    service.replace('DD_USER', user).replace('DD_CHECKOUT', checkout))
-sudoers = (source / 'sudoers-dynamic-dispatch').read_text()
-(target / 'sudoers-dynamic-dispatch').write_text(sudoers.replace('DD_USER', user))
-RENDER""",
-        ]
-    for name in files:
-        source = shlex.quote(str(Path(checkout) / name))
-        if name in templates:
-            source = f'"$DD_DEPLOY_TMP/{Path(name).name}"'
-        if name == "deploy/dd-agent-run":
-            lines.append(f"sudo install -o root -g root -m 755 {source} /usr/local/bin/dd-agent-run")
-        elif name == "deploy/sudoers-dynamic-dispatch":
-            lines += [f"sudo visudo -cf {source} && "
-                      f"sudo install -o root -g root -m 440 {source} /etc/sudoers.d/dynamic-dispatch",
-                      "sudo visudo -c"]
-        elif name == "deploy/dd-rollback":
-            lines.append(f"sudo install -o root -g root -m 755 {source} /usr/local/bin/dd-rollback")
-        elif name in ("deploy/dynamic-dispatch.service", "deploy/dynamic-dispatch-rollback.service"):
-            unit = Path(name).name
-            lines += [f"sudo install -o root -g root -m 644 {source} /etc/systemd/system/{unit}",
-                      "sudo systemctl daemon-reload"]
-        else:
-            lines.append(f"{name}: see deploy/README.md")
-    if templates.intersection(files):
-        lines.append('rm -r -- "$DD_DEPLOY_TMP"')
-    lines.append("sudo systemctl restart dynamic-dispatch")
-    return lines
+
+def _install_steps(cfg, checkout, files):
+    """The steps to install changed deploy files with deploy/dd-install, kept short enough to fit an alert."""
+    problem = f"it changes {', '.join(files)}, which must be installed. "
+    accounts = {config.run_as(cfg, name) for name in cfg["agents"]}
+    unknown = sorted(accounts - INSTALLER_AGENTS.keys())
+    if unknown or not accounts:
+        named = ", ".join(unknown)
+        named = f" ({named[:39] + '…' if len(named) > 40 else named})" if named else ""
+        return (problem + f"deploy/dd-install doesn't know every agent account{named}, so follow "
+                "\"When a deploy file changes\" in deploy/README.md by hand, then restart DD.")
+    agents = " ".join(name for account, name in INSTALLER_AGENTS.items() if account in accounts)
+    # A very long checkout path could push the steps past the alert size limit.
+    pull = f"cd {shlex.quote(str(checkout))} && git pull"
+    if len(pull.encode("utf-8")) > 200:
+        pull = "In DD's checkout, run git pull"
+    return (problem + "Update it by hand:\n\n"
+            f"1. {pull}\n"
+            f"2. sudo python3 deploy/dd-install --agents {agents}\n"
+            "3. sudo systemctl restart dynamic-dispatch")
 
 
 def _event(conn, project, kind, detail):

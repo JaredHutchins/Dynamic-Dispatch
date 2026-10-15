@@ -1,6 +1,8 @@
 """DD updating itself after a merge to its own code, once main's tests pass on it."""
 
+import json
 import sys
+from pathlib import Path
 from unittest import mock
 
 from dispatch import alerts, github, gitops, plane, runs, selfupdate
@@ -245,16 +247,6 @@ class SelfUpdate(Base):
         self.assertEqual(self.head(), fixed)
         self.assertEqual(git("branch", "--show-current", cwd=self.checkout).strip(), "main")
 
-    def test_recovery_deploy_files_have_exact_install_commands(self):
-        commands = selfupdate._commands(self.checkout, ["deploy/dd-rollback",
-                                       "deploy/dynamic-dispatch-rollback.service"])
-        self.assertIn(f"sudo install -o root -g root -m 755 {self.checkout}/deploy/dd-rollback "
-                      "/usr/local/bin/dd-rollback", commands)
-        self.assertIn(f"sudo install -o root -g root -m 644 "
-                      f"{self.checkout}/deploy/dynamic-dispatch-rollback.service "
-                      "/etc/systemd/system/dynamic-dispatch-rollback.service", commands)
-        self.assertIn("sudo systemctl daemon-reload", commands)
-
     def test_fallback_return_refuses_local_changes_and_diverged_main(self):
         target = self.merge(["dispatch/worker.py"])
         gitops.own_checkout(self.checkout, "main", target)
@@ -367,10 +359,8 @@ class SelfUpdate(Base):
         self.assertIn("Tighter launcher", message)
         self.assertIn("deploy/dd-agent-run, deploy/sudoers-dynamic-dispatch", message)
         self.assertIn(f"cd {self.checkout} && git pull", message)
-        self.assertIn(f"sudo install -o root -g root -m 755 {self.checkout}/deploy/dd-agent-run "
-                      "/usr/local/bin/dd-agent-run", message)
-        self.assertIn('sudo visudo -cf "$DD_DEPLOY_TMP/sudoers-dynamic-dispatch" && '
-                      'sudo install', message)
+        self.assertIn("2. sudo python3 deploy/dd-install --agents claude", message)
+        self.assertNotIn("which DD never installs", message)
         self.assertIn("sudo systemctl restart dynamic-dispatch", message)
 
     def test_deploy_markdown_updates_without_restarting(self):
@@ -402,7 +392,7 @@ class SelfUpdate(Base):
                 self.assertEqual(runs.claim_self_update_restart(self.conn)["revision"], target)
 
     def test_deploy_readme_with_launcher_alerts_only_for_launcher(self):
-        target = self.merge(["deploy/README.md", "deploy/dd-agent-run"])
+        target = self.merge(["deploy/README.md", "deploy/dd-install", "deploy/dd-agent-run"])
         self.main_green(target)
         for _ in range(2):
             self.assertFalse(self.cycle())
@@ -410,22 +400,85 @@ class SelfUpdate(Base):
         self.assertEqual(self.events("self_update"), [])
         [(_, message, level)] = self.sent
         self.assertEqual(level, "active")
-        self.assertIn("it changes deploy/dd-agent-run, which DD never installs", message)
+        self.assertIn("it changes deploy/dd-agent-run, which must be installed.", message)
         self.assertNotIn("deploy/README.md", message)
-        self.assertIn(f"sudo install -o root -g root -m 755 {self.checkout}/deploy/dd-agent-run "
-                      "/usr/local/bin/dd-agent-run", message)
+        self.assertIn("2. sudo python3 deploy/dd-install --agents claude", message)
         self.assertIn("sudo systemctl restart dynamic-dispatch", message)
 
-    def test_new_non_markdown_deploy_file_still_blocks(self):
-        target = self.merge(["deploy/new.conf"])
+    def test_every_deploy_file_is_classified(self):
+        root = Path(__file__).resolve().parents[1]
+        # Python caches bytecode beside deploy/dd-install when tests load it; that isn't a deploy file.
+        files = {str(p.relative_to(root)) for p in (root / "deploy").rglob("*")
+                 if p.is_file() and "__pycache__" not in p.parts}
+        self.assertEqual(files, set(selfupdate.DEPLOY_FILES))
+        self.assertEqual(set(selfupdate.DEPLOY_FILES.values()),
+                         {"installed", "checkout", "documentation"})
+
+    def test_a_deploy_file_this_copy_of_dd_does_not_know_still_holds_back(self):
+        target = self.merge(["deploy/new.conf", "deploy/NOTES.md"])
         self.main_green(target)
         self.assertFalse(self.cycle())
         self.assertEqual(self.head(), self.started)
-        self.assertEqual(self.events("self_update"), [])
-        [(_, message, level)] = self.sent
-        self.assertEqual(level, "active")
-        self.assertIn("it changes deploy/new.conf", message)
-        self.assertIn("deploy/new.conf: see deploy/README.md", message)
+        [(_, message, _)] = self.sent
+        self.assertIn("it changes deploy/new.conf, which must be installed.", message)
+        self.assertNotIn("NOTES.md", message)
+
+    def test_installer_updates_without_restarting(self):
+        target = self.merge(["deploy/dd-install"])
+        self.main_green(target)
+        self.assertFalse(self.cycle())
+        self.assertEqual(self.head(), target)
+        self.assertEqual(self.sent, [])
+
+    def test_installer_agents_come_from_accounts_and_are_deduplicated(self):
+        self.cfg["agents"].update({"other": {"run_as": "dd-codex"},
+                                   "third": {"run_as": "dd-gemini"},
+                                   "duplicate": {"run_as": "dd-agent"}})
+        target = self.merge(["deploy/dd-agent-run"])
+        self.main_green(target)
+        self.cycle()
+        self.assertEqual(self.head(), self.started)
+        message = self.sent[0][1]
+        self.assertIn(f"1. cd {self.checkout} && git pull", message)
+        self.assertIn("2. sudo python3 deploy/dd-install --agents claude codex gemini\n", message)
+        self.assertIn("3. sudo systemctl restart dynamic-dispatch", message)
+
+    def test_unknown_account_uses_manual_steps(self):
+        self.cfg["agents"]["claude-code"]["run_as"] = "custom-agent"
+        target = self.merge(["deploy/dd-agent-run"])
+        self.main_green(target)
+        self.cycle()
+        self.assertEqual(self.head(), self.started)
+        message = self.sent[0][1]
+        self.assertIn("deploy/dd-install doesn't know every agent account (custom-agent)", message)
+        self.assertIn('"When a deploy file changes" in deploy/README.md by hand', message)
+        self.assertNotIn("--agents", message)
+
+    def test_deploy_alert_fits_without_losing_steps(self):
+        # Worst-case form escaping: every encrypted byte becomes / in base64.
+        class Cipher:
+            def encrypt(self, iv, raw, aad):
+                self.raw = raw
+                return b"\xff" * (len(raw) + 16)
+
+        files = [name for name, kind in selfupdate.DEPLOY_FILES.items() if kind == "installed"]
+        update = {"project": "dd", "target": "a" * 40, "head": "b" * 40,
+                  "title": "🦆" * selfupdate.TITLE_LIMIT}
+        for account in ("dd-agent", "unknown" * 1000):
+            with self.subTest(account=account[:20]):
+                self.cfg["agents"]["claude-code"]["run_as"] = account
+                problem = selfupdate._install_steps(self.cfg, Path("/" + "🦆" * 1000), files)
+                update["target"] = ("c" if account == "dd-agent" else "d") * 40
+                selfupdate._refuse(self.cfg, self.conn, update, "deploy", problem)
+                message = self.sent[-1][1]
+                cipher = Cipher()
+                group = "dynamic-dispatch update"  # as alerts.Alerts sends a project alert
+                form = alerts.encrypted_form(cipher, {"title": group, "body": message, "group": group,
+                                                      "level": "active", "url": ""})
+                self.assertLessEqual(len(form), alerts.MAX_PAYLOAD)
+                self.assertEqual(json.loads(cipher.raw)["body"], message)
+                for name in files:
+                    self.assertIn(name, message)
 
     def test_a_failed_fast_forward_is_retried_on_the_next_check(self):
         target = self.merge(["dispatch/worker.py"])
