@@ -15,6 +15,7 @@ Sign up or sign in at https://app.plane.so and create a workspace. Choose its
 name and workspace URL. Open it and note the short name (slug): in
 `https://app.plane.so/my-workspace/...`, it is `my-workspace`, without slashes.
 You need workspace admin access to install apps.
+Set your Plane profile's time zone to your own, so Cycle start and end dates fall on your local days.
 
 Plane Cloud's web address is `https://app.plane.so`; its separate API address
 is `https://api.plane.so`. Guided setup asks for both.
@@ -105,6 +106,14 @@ If the app has a different Redirect URI, add
 An installed app is a member of the workspace's existing projects straight away.
 
 ## 4. Run guided setup
+
+For sprint-pull, first find the approver's Plane user ID: using that person's
+personal token, send `GET https://api.plane.so/api/v1/users/me/` with headers
+`X-API-Key` set to their token and `User-Agent` set to `dynamic-dispatch/1`.
+Copy the `id` from the JSON response and enter it when setup asks for the
+approver's Plane user ID. This is the same lookup DD uses in
+[`Plane.current_user()`](../dispatch/plane.py); use the approver's token,
+not an app's credentials, so you get the person's ID.
 
 ```sh
 python3 main.py --setup
