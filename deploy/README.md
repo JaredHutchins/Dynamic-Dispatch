@@ -997,3 +997,93 @@ The doctor also checks the rest of the host:
   `sandbox.launcher`. Each failure names the file to reinstall, as described in
   "Install (once)" and "When a deploy file changes" above. Run the doctor as
   DD's account, from its checkout, or the service checks report a mismatch.
+
+## Docker (ARM64 and Intel/AMD64)
+
+`deploy/Dockerfile` and `deploy/compose.yaml` run DD in one Debian container,
+on a Mac or any machine with Docker, with the same accounts and sudo rule as a
+Linux host. The image has Python, Git, sudo and Gemini CLI 0.59.0, is set up
+with `dd-install --container --agents gemini`, and sets `DD_CONTAINER=1`. It
+needs no privileged mode and no Docker socket. From the repository root:
+
+    docker compose -f deploy/compose.yaml up -d --build
+
+On first start, with an empty checkout volume, the container clones DD's public
+`main` into `/home/dd/checkout`. Every start then:
+
+1. as root, gives each volume's top folder back to its account;
+2. as DD, decides whether to roll back (below);
+3. as root, re-runs `deploy/dd-install --container` from the checkout, so the
+   launcher, rollback helper and sudo rule always match the code about to run;
+4. as root, copies the Gemini credential, if one is mounted (below);
+5. drops to DD's account for good and runs DD. When DD exits, Docker starts the
+   container again (`restart: unless-stopped`), so an update's restart also
+   re-runs the installer.
+
+Because of step 3, whatever is in DD's checkout runs as root inside the
+container at the next start. Only DD's account can write it.
+
+### Configure it
+
+After the first clone, write the config into its own volume, then restart:
+
+    docker compose -f deploy/compose.yaml run --rm --user dd --entrypoint python3 dd main.py --setup --config /home/dd/config/config.json
+    docker compose -f deploy/compose.yaml restart
+
+Until then DD can't start, and each failure counts towards recovery below. Use
+the Gemini agent settings in "Adding Gemini CLI" above; its env file is
+`/etc/dynamic-dispatch/gemini.env`, owned by `root:dd-gemini` with mode 640,
+which you can write with `docker compose -f deploy/compose.yaml exec dd ...`.
+Set `db_path` to `/home/dd/.local/share/dynamic-dispatch/runs.db` and use
+`/srv/dynamic-dispatch/repos` and `/srv/dynamic-dispatch/worktrees` for project
+clones and story folders. Set `self_update_public_repo` to DD's public
+repository to update DD to tested public `main` commits.
+
+### What survives
+
+Named volumes keep DD's home (including its Git login), checkout, config,
+history, project repositories, story folders, agent env files and Gemini's home.
+Nothing else lasts: anything written elsewhere is gone when the container is
+recreated. `down` keeps the volumes; `down -v` deletes them. Logs:
+
+    docker compose -f deploy/compose.yaml logs dd
+
+Changes to `deploy/Dockerfile`, `deploy/compose.yaml` or
+`deploy/dd-container-start` don't hold back DD's own update, and take effect
+only when you rebuild with the `up -d --build` command above. Changes to
+installed files are still held back as described in "Updating itself after a
+merge" above.
+
+### A Gemini credential file
+
+To give Gemini's account a key file, such as a Vertex AI service account key,
+keep it outside the repository, set `DD_GEMINI_CREDENTIAL` to its path and
+uncomment the credential line in `deploy/compose.yaml` (or add it in a Compose
+override file). It is mounted read-only at `/etc/dd-credentials/gemini.json`,
+in a folder only root can open. On each start the container copies it to
+`/home/dd-gemini/gemini-credential.json`, owned by `dd-gemini` with mode 400,
+inside Gemini's private home: DD's account and other agents can't read it. Point
+Gemini at it from `gemini.env`:
+
+    GOOGLE_APPLICATION_CREDENTIALS=/home/dd-gemini/gemini-credential.json
+
+Remove the mount and the next start removes the copy. Mount the file, not a
+folder: the container refuses to start if `/etc/dd-credentials` is open to
+anyone but root.
+
+### Rolling back in a container
+
+DD crashing three times within five minutes (any exit but a clean one, a stop
+or an update restart), or the installer failing, makes the next start run the
+installed `dd-rollback` as DD, with the Pi's rules from "Rolling back a bad
+update": back to the last version that ran for ten minutes, the planned-restart
+exemption after an update, and one attempt before "DD is down and needs a hand".
+DD records that version itself, as on the Pi, in `.dd-recovery/state.json` in
+the checkout volume, so it survives restarts and image rebuilds.
+The reason is written to the log; no Bark alert is sent. While recovery is
+latched down, the container stays up but doesn't start DD. Fix the checkout,
+then remove the latch and DD starts within a minute:
+
+    docker compose -f deploy/compose.yaml exec --user dd dd rm /home/dd/checkout/.dd-recovery/state.json
+
+This also forgets the last good version, as on the Pi.

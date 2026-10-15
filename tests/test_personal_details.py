@@ -20,6 +20,7 @@ FORBIDDEN_TERMS = (
 # Entries are (repository-relative file, term, one-line reason), for deliberate
 # release uses such as a LICENSE author credit or a README public repository link.
 ALLOWED_EXCEPTIONS = [
+    ("deploy/dd-container-start", "jaredhutchins", "Public repository cloned on first container start."),
     ("README.md", "jaredhutchins", "Public repository URL for the main test status badge."),
 ]
 

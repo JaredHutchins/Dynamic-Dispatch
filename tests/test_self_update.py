@@ -536,7 +536,7 @@ class SelfUpdate(Base):
                  if p.is_file() and "__pycache__" not in p.parts}
         self.assertEqual(files, set(selfupdate.DEPLOY_FILES))
         self.assertEqual(set(selfupdate.DEPLOY_FILES.values()),
-                         {"installed", "checkout", "documentation"})
+                         {"installed", "checkout", "documentation", "image"})
 
     def test_a_deploy_file_this_copy_of_dd_does_not_know_still_holds_back(self):
         target = self.merge(["deploy/new.conf", "deploy/NOTES.md"])
@@ -546,6 +546,14 @@ class SelfUpdate(Base):
         [(_, message, _)] = self.sent
         self.assertIn("it changes deploy/new.conf, which must be installed.", message)
         self.assertNotIn("NOTES.md", message)
+
+    def test_container_image_files_update_without_holding_back(self):
+        # A Pi never uses them, and a container keeps its image until someone rebuilds it.
+        target = self.merge(["deploy/Dockerfile", "deploy/compose.yaml", "deploy/dd-container-start"])
+        self.main_green(target)
+        self.assertFalse(self.cycle())
+        self.assertEqual(self.head(), target)
+        self.assertEqual(self.sent, [])
 
     def test_installer_updates_without_restarting(self):
         target = self.merge(["deploy/dd-install"])

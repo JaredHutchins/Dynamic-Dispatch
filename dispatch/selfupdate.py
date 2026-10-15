@@ -15,8 +15,9 @@ What the update changes decides what happens:
     queued have gone, DD fast-forwards the checkout and exits with EXIT_CODE,
     and systemd (Restart=on-failure) starts it on the new code;
   - anything else (documents, including *.md under deploy/, tests, and deploy
-    files that run from the checkout, such as deploy/dd-install): DD
-    fast-forwards the checkout and carries on, without restarting.
+    files that run from the checkout, such as deploy/dd-install, or that only
+    the container image uses): DD fast-forwards the checkout and carries on,
+    without restarting.
 
 A checkout with local changes, manually off main, or that can't be fast-forwarded is
 left alone, with one alert per commit. Errors, a failed fast-forward among
@@ -40,9 +41,13 @@ TITLE_LIMIT = 200
 CODE_FOLDER, CODE_FILE, DEPLOY = "dispatch/", "main.py", "deploy/"
 # The one list of how each deploy file reaches the machine: "installed" files are
 # copied out of the checkout, so a change to one waits for deploy/dd-install;
-# "checkout" files run from the checkout and "documentation" is only read, so
+# "checkout" files run from the checkout, "documentation" is only read, and
+# "image" files only take effect when someone rebuilds the container image, so
 # those update normally. A test fails if a file in deploy/ is missing here.
 DEPLOY_FILES = {
+    "deploy/Dockerfile": "image",
+    "deploy/compose.yaml": "image",
+    "deploy/dd-container-start": "image",
     "deploy/dd-agent-run": "installed",
     "deploy/dd-rollback": "installed",
     "deploy/sudoers-dynamic-dispatch": "installed",
