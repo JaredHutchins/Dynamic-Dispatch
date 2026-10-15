@@ -9,9 +9,10 @@ merges anything itself.
 The aim is that a story posted in the morning becomes a reviewable, tested
 pull request by the evening, without anyone watching over it.
 
-**Status: early release (v0.1).** DD builds its own stories every day on its
-author's setup, but setup is manual and that is the only setup tested so far.
-See [What you need](#what-you-need).
+**Status: early release.** See [Releases](../../releases) for the current
+version and what changed. DD builds its own stories every day on its author's
+setup, and that is the only setup tested so far. See
+[What you need](#what-you-need).
 
 ## Who it is for
 
@@ -29,18 +30,22 @@ merge it. It is not a hosted service, and it does not replace code review.
   its own Linux account. A Raspberry Pi 4 is enough.
 - **Python 3.11 or newer.** DD uses only the standard library, plus
   `cryptography` if you turn on phone alerts.
-- **Self-hosted Plane Community Edition.** Tested with 1.4.2. Plane Cloud
-  isn't supported yet.
+- **Plane:** self-hosted Plane Community Edition (tested with 1.4.2), or
+  Plane Cloud, where the Orchestrator and agents can sign in as Plane apps (bots).
+  See [Using Plane Cloud](deploy/README.md#using-plane-cloud).
 - **A GitHub repository,** a GitHub App for DD (it opens pull requests and
   sets the status light), and a Git login on the machine that can push to the
   repository.
-- **At least one agent:** Claude Code or Codex, installed and logged in.
+- **At least one agent:** Claude Code, Codex or Gemini CLI, installed and
+  logged in. Gemini CLI has so far been tested with its recorded output, not
+  a live account.
 - **Optional:** a self-hosted [Bark server](https://github.com/Finb/bark-server)
   and the [Bark app](https://github.com/Finb/Bark) (iPhone and iPad) for
   encrypted phone alerts.
 
 To set it up, first run the [installer](deploy/README.md#recommended-system-setup),
-then run this as DD's account from the checkout:
+then the [guided setup](deploy/README.md#guided-setup), as DD's account from
+the checkout:
 
     python3 main.py --setup
 
@@ -99,6 +104,10 @@ Cycle:
 5. When the Cycle ends, stories that never started are carried over to the
    Product Backlog with a note.
 
+A Cycle ends early once all its stories are Done or Cancelled and main has
+passed its tests. A Cancelled story never releases the stories that depend on
+it; they are carried over instead.
+
 Sprint-pull is off unless you turn it on for a project.
 
 ## Keeping work safe
@@ -137,7 +146,3 @@ Sprint-pull is off unless you turn it on for a project.
 - [deploy/README.md](deploy/README.md): setting DD up and running it as a
   service.
 - [LICENSE](LICENSE): the licence DD is released under.
-
-Setting DD up is currently a manual process, described in
-[deploy/README.md](deploy/README.md). These steps will be simplified by an
-installer later.
