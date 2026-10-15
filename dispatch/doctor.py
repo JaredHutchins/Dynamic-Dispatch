@@ -144,24 +144,25 @@ def run(path=None, *, project=None):
 
 
 def _check_plane(cfg, check, require):
-    def client(token):
-        p = cfg['plane']
-        return plane.Plane(plane.api_url(p), p['workspace_slug'], token)
-
     def orchestrator():
-        connection = client(cfg['plane']['orchestrator_token'])
+        connection = plane.orchestrator_login(cfg)
         connection.current_user()
         return connection
 
+    # A bot's check gets its token from Plane first, so it shows the app can sign in.
+    bot = 'orchestrator_bot' in cfg['plane']
     orch = check('Plane Orchestrator', orchestrator,
+                 'Plane is reachable and the Orchestrator app signs in.' if bot else
                  'Plane is reachable and the token works.',
                  'Cannot sign in to Plane; check its URL and Orchestrator settings.',
-                 service='Plane', credential='Plane Orchestrator token')
+                 service='Plane', credential='Plane Orchestrator app login' if bot else 'Plane Orchestrator token')
     users = {}
     for index, (name, agent) in enumerate(cfg['agents'].items(), 1):
-        users[name] = check(f'Plane agent {index}', lambda: client(agent['plane_token']).current_user(),
-                            'Token works.', 'Cannot sign in; check Plane access and this agent token.',
-                            service='Plane', credential='Plane agent token')
+        bot = 'plane_bot' in agent
+        users[name] = check(f'Plane agent {index}', lambda: plane.as_agent(cfg, agent).current_user(),
+                            'App signs in.' if bot else 'Token works.',
+                            'Cannot sign in; check Plane access and this agent ' + ('app.' if bot else 'token.'),
+                            service='Plane', credential='Plane agent app login' if bot else 'Plane agent token')
 
     for index, project in enumerate(cfg['projects'].values(), 1):
         prefix = f'Plane project {index}'

@@ -24,6 +24,16 @@ class Redaction(Base):
             self.assertNotIn(secret, everything)
         self.assertIn("[redacted]", board.comments[0][2])
 
+    def test_plane_app_secrets_are_scrubbed(self):
+        self.addCleanup(redact.set_secrets, [])
+        cfg = {"plane": {"orchestrator_bot": {"client_id": "fake-client-id",
+                                              "client_secret": "fake-orchestrator-app-secret"}},
+               "github": {}, "agents": {"a": {"plane_token": "fake-agent-plane-token"},
+                                        "b": {"plane_bot": {"client_secret": "fake-agent-app-secret"}}}}
+        redact.configure(cfg)
+        text = redact.scrub("fake-orchestrator-app-secret fake-agent-app-secret fake-agent-plane-token fake-client-id")
+        self.assertEqual(text, "[redacted] [redacted] [redacted] fake-client-id")
+
     def test_scrub_longest_first(self):
         redact.set_secrets(["abcdefgh", "abcdefghijkl"])
         self.assertEqual(redact.scrub("x abcdefghijkl y"), "x [redacted] y")

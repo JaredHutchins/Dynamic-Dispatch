@@ -6,5 +6,18 @@
   "member_added": {"status": 200, "body": {"id": "fake-member"}},
   "issue": {"status": 200, "body": {"id": "fake-issue"}},
   "limited": {"status": 429, "headers": {"Retry-After": "12"}, "body": {"detail": "Request was throttled."}},
-  "limited_without_delay": {"status": 429, "body": {"detail": "Request was throttled."}}
+  "limited_without_delay": {"status": 429, "body": {"detail": "Request was throttled."}},
+  "app_token": {
+    "status": 200,
+    "body": {"access_token": "fake-app-access-token-one", "token_type": "Bearer", "expires_in": 36000,
+             "scope": "profile:read"}
+  },
+  "app_token_renewed": {
+    "status": 200,
+    "body": {"access_token": "fake-app-access-token-two", "token_type": "Bearer", "expires_in": 36000,
+             "scope": "profile:read"}
+  },
+  "app_login_rejected": {"status": 401, "body": {"error": "invalid_client"}},
+  "app_token_rejected": {"status": 401, "body": {"detail": "Given token not valid for any token type"}},
+  "app_user": {"status": 200, "body": {"id": "fake-app-user", "display_name": "orchestrator", "is_bot": true}}
 }

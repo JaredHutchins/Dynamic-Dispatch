@@ -17,10 +17,14 @@ REPLACEMENT = "[redacted]"
 
 
 def configure(cfg):
-    """Collect every secret DD knows about."""
-    found = [cfg["plane"]["orchestrator_token"], cfg["github"].get("token")]
+    """Collect every secret DD knows about.
+
+    A Plane app's access token isn't in config; it is added when DD gets it.
+    """
+    found = [cfg["plane"].get("orchestrator_token"), _bot_secret(cfg["plane"].get("orchestrator_bot")),
+             cfg["github"].get("token")]
     for agent_cfg in cfg["agents"].values():
-        found.append(agent_cfg["plane_token"])
+        found.extend([agent_cfg.get("plane_token"), _bot_secret(agent_cfg.get("plane_bot"))])
         env_file = agent_cfg.get("env_file")
         if env_file:
             found.extend(read_env_values(env_file))
@@ -33,6 +37,10 @@ def configure(cfg):
             alert_secrets.extend(devices)
         alert_secrets = [value for value in alert_secrets if isinstance(value, str) and value]
     set_secrets(found + alert_secrets)
+
+
+def _bot_secret(bot):
+    return bot.get("client_secret") if isinstance(bot, dict) else None
 
 
 def set_secrets(values):

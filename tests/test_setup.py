@@ -1,4 +1,5 @@
 """Guided setup, against fake Plane and GitHub replies, never shows or leaks an entered secret."""
+import base64
 import contextlib
 import getpass
 import io
@@ -27,7 +28,10 @@ BARK_KEY = 'fake-bark-encryption-key-32chars'
 SECRETS = (ORCH, CLAUDE, CODEX, WRONG, GH_TOKEN, GH_WRONG, INSTALLATION, DEVICE, BARK_KEY)
 PLANE = 'https://plane.example.com'
 APPROVER_ID = '0f1e2d3c-0000-4000-8000-000000000001'
-USERS = {ORCH: 'user-orchestrator', CLAUDE: 'user-claude', CODEX: 'user-codex'}
+ORCH_APP, CLAUDE_APP = 'fake-orchestrator-app-secret', 'fake-claude-app-secret'
+APPS = {ORCH_APP: 'fake-orchestrator-app-access', CLAUDE_APP: 'fake-claude-app-access'}
+USERS = {ORCH: 'user-orchestrator', CLAUDE: 'user-claude', CODEX: 'user-codex',
+         APPS[ORCH_APP]: 'user-orchestrator-app', APPS[CLAUDE_APP]: 'user-claude-app'}
 PERMISSIONS = {'contents': 'read', 'pull_requests': 'write', 'statuses': 'write'}
 
 
@@ -40,7 +44,8 @@ class Response(io.BytesIO):
 class Services:
     """Plane and GitHub as setup sees them. Refusals echo the credential, as a careless server might."""
 
-    def __init__(self):
+    def __init__(self, plane_api=PLANE):
+        self.plane_api = plane_api
         self.permissions = dict(PERMISSIONS)
         # Permissions for the next installation tokens issued, before falling back to self.permissions.
         self.grants = []
@@ -51,13 +56,20 @@ class Services:
 
     def __call__(self, request, timeout=None):
         url = request.full_url
-        if url.startswith(PLANE):
-            token = request.get_header('X-api-key')
+        if url == self.plane_api + '/auth/o/token/':
+            # A Plane app's token, for the client secret in its Basic login.
+            secret = base64.b64decode(request.get_header('Authorization').removeprefix('Basic ')).decode()
+            app = secret.partition(':')[2]
+            if app not in APPS:
+                raise self.refuse(url, 401, app)
+            return Response({'access_token': APPS[app], 'token_type': 'Bearer', 'expires_in': 36000})
+        if url.startswith(self.plane_api):
+            token = request.get_header('X-api-key') or request.get_header('Authorization').removeprefix('Bearer ')
             if token not in USERS:
                 raise self.refuse(url, 401, token)
-            if url == PLANE + '/api/v1/users/me/':
+            if url == self.plane_api + '/api/v1/users/me/':
                 return Response({'id': USERS[token]})
-            if url.startswith(PLANE + '/api/v1/workspaces/workspace/projects/'):
+            if url.startswith(self.plane_api + '/api/v1/workspaces/workspace/projects/'):
                 return Response({'results': [], 'next_page_results': False})
             raise self.refuse(url, 404, token)
         credential = request.get_header('Authorization').removeprefix('Bearer ')
@@ -207,6 +219,71 @@ class SetupTests(unittest.TestCase):
         doctor.assert_called_once()
         self.assert_no_secret_leaked()
 
+    def test_plane_apps_are_kept_and_checked(self):
+        self.run_setup(self.first_answers())
+        cfg = json.loads(self.path.read_text())
+        del cfg['plane']['orchestrator_token'], cfg['agents']['claude-code']['plane_token']
+        cfg['plane']['orchestrator_bot'] = {'client_id': 'orchestrator-app', 'client_secret': ORCH_APP,
+                                            'app_installation_id': 'orchestrator-install'}
+        cfg['agents']['claude-code']['plane_bot'] = {'client_id': 'claude-app', 'client_secret': CLAUDE_APP,
+                                                     'app_installation_id': 'claude-install'}
+        self.path.write_text(json.dumps(cfg))
+        original = self.path.read_bytes()
+        # No Plane token is asked for the Orchestrator or Claude.
+        result, terminal, _, _ = self.run_setup([''] * 19)
+        self.assertEqual(result, 0)
+        self.assertEqual(self.path.read_bytes(), original)
+        self.assertFalse(any("Orchestrator's Plane API token" in p or "Claude's Plane API token" in p
+                             for p in terminal.prompts))
+        self.assertTrue(any("Codex's Plane API token" in p for p in terminal.prompts))
+        out = self.output.getvalue()
+        for secret in (ORCH_APP, CLAUDE_APP, *APPS.values()):
+            self.assertNotIn(secret, out)
+        self.assert_no_secret_leaked()
+
+    def test_plane_cloud_with_an_orchestrator_app(self):
+        self.services = Services('https://api.plane.so')
+        bot = {'client_id': 'orchestrator-app', 'client_secret': ORCH_APP, 'app_installation_id': 'orchestrator-install'}
+        self.path.write_text(json.dumps({'plane': {'orchestrator_bot': bot}, 'projects': {},
+                                         'db_path': str(self.home / 'runs.db'),
+                                         'sandbox': {'user': 'dd-agent', 'launcher': '/usr/local/bin/dd-agent-run'}}))
+        self.path.chmod(0o600)
+        answers = [
+            'https://app.plane.so', 'workspace', '',  # no token is asked for the Orchestrator's app
+            'yes', '1234', '42', str(self.key), 'reviewer',
+            'claude codex',
+            CLAUDE, '', 'claude@example.com',
+            CODEX, '', 'codex@example.com',
+            'no',                                     # no alerts
+            'no',                                     # no project yet
+        ]
+        result, terminal, _, _ = self.run_setup(answers)
+        self.assertEqual(result, 0)
+        cfg = json.loads(self.path.read_text())
+        self.assertEqual(cfg['plane'], {'base_url': 'https://app.plane.so', 'api_url': 'https://api.plane.so',
+                                        'workspace_slug': 'workspace', 'orchestrator_bot': bot})
+        self.assertEqual(config.load(self.path, allow_empty_projects=True)['plane']['orchestrator_bot'], bot)
+        self.assertFalse(any("Orchestrator's Plane API token" in p for p in terminal.prompts))
+        out = self.output.getvalue()
+        for secret in (ORCH_APP, *APPS.values()):
+            self.assertNotIn(secret, out)
+        self.assert_no_secret_leaked()
+
+    def test_a_rejected_plane_app_stops_setup_without_its_secret(self):
+        self.run_setup(self.first_answers())
+        cfg = json.loads(self.path.read_text())
+        del cfg['agents']['claude-code']['plane_token']
+        cfg['agents']['claude-code']['plane_bot'] = {'client_id': 'claude-app', 'client_secret': 'fake-wrong-app-secret',
+                                                     'app_installation_id': 'claude-install'}
+        self.path.write_text(json.dumps(cfg))
+        original = self.path.read_bytes()
+        result, _, _, _ = self.run_setup([''] * 10)
+        self.assertEqual(result, 1)
+        self.assertEqual(self.path.read_bytes(), original)
+        out = self.output.getvalue()
+        self.assertIn("Setup stopped: Claude's Plane app (plane_bot) was rejected", out)
+        self.assertNotIn('fake-wrong-app-secret', out)
+
     def test_a_change_keeps_the_original_as_a_private_backup(self):
         self.run_setup(self.first_answers())
         original = self.path.read_bytes()
@@ -293,10 +370,9 @@ class SetupTests(unittest.TestCase):
         self.assert_no_secret_leaked()
 
     def test_unsafe_answers_are_refused(self):
-        answers = ['https://app.plane.so', 'https://user:pw@plane.example.com', PLANE, 'work/space']
+        answers = ['https://user:pw@plane.example.com', PLANE, 'work/space']
         self.assertEqual(self.run_setup(answers)[0], 1)
         out = self.output.getvalue()
-        self.assertIn('Plane Cloud is not supported', out)
         self.assertIn('without a login', out)
         self.assertIn('without slashes', out)
         self.assertFalse(self.path.exists())
