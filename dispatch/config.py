@@ -9,6 +9,7 @@ import grp
 import json
 import os
 import pwd
+import re
 import shutil
 import stat
 import tempfile
@@ -99,9 +100,20 @@ def read(path=None):
         return json.load(f)
 
 
+def _check_self_update(cfg):
+    if "self_update_public_repo" not in cfg:
+        return
+    if "self_update" in cfg:
+        raise ConfigError("self_update and self_update_public_repo cannot both be set")
+    repo = cfg["self_update_public_repo"]
+    if not isinstance(repo, str) or not re.fullmatch(r"[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+", repo) or repo.split("/")[-1] in (".", ".."):
+        raise ConfigError("self_update_public_repo must name a public GitHub repository as owner/repo")
+
+
 def load(path=None, *, allow_empty_projects=False):
     cfg = read(path)
 
+    _check_self_update(cfg)
     _require(cfg, REQUIRED_TOP, "config.json")
     _require(cfg["sandbox"], ("user", "launcher"), "sandbox")
     _check_github(cfg["github"])

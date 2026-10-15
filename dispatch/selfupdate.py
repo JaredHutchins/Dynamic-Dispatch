@@ -4,7 +4,8 @@ The optional self_update setting names the project whose repository is DD
 itself. DD's own checkout, the folder it runs from, is separate from that
 project's repository, where agents work. An update is pending when the
 checkout is behind the project's main and the main check found main green at
-exactly main's latest commit. Without the setting, DD never updates itself.
+exactly main's latest commit. Alternatively, self_update_public_repo gates
+updates on GitHub checks without needing a DD project or GitHub login.
 
 What the update changes decides what happens:
   - deploy files DEPLOY_FILES lists as installed: DD sends one alert with the
@@ -28,7 +29,7 @@ import shlex
 import time
 from pathlib import Path
 
-from . import alerts, config, github, gitops, mainhealth, plane, runs, sync
+from . import alerts, config, github, gitops, publicupdate, mainhealth, plane, runs, sync
 from .redact import log, scrub, warn
 from .stories import story_ref
 
@@ -82,9 +83,14 @@ def pending(cfg, conn, checkout):
     """The code update DD must restart for, or None. A documents-only update is applied on the way."""
     project = project_name(cfg)
     update = None
-    if project is not None:
+    if project is not None or cfg.get("self_update_public_repo"):
         try:
-            update = _check(cfg, conn, project, Path(checkout))
+            if cfg.get("self_update_public_repo"):
+                target = publicupdate.target(cfg["self_update_public_repo"], conn)
+                if target:
+                    update = _checked_update(cfg, conn, "", Path(checkout), target, "main", public=True)
+            else:
+                update = _check(cfg, conn, project, Path(checkout))
         except Exception as e:  # an update never fails or blocks a story
             _warning(conn, project, f"Could not check for an update to DD; will retry: {e}")
     target = update["target"] if update else None
@@ -100,19 +106,22 @@ def _check(cfg, conn, project, checkout):
     health = runs.main_health(conn, project)
     if health is None or health["state"] != mainhealth.GREEN:
         return None
-    target = health["revision"]
+    base = cfg["projects"][project].get("base_branch", "main")
+    return _checked_update(cfg, conn, project, checkout, health["revision"], base)
+
+
+def _checked_update(cfg, conn, project, checkout, target, base, *, public=False):
     recovery = runs.rollback_state(checkout)
     if target == recovery.get("failed"):
         return None
     head = gitops.head_revision(checkout)
     if head == target:
         return None
-    base = cfg["projects"][project].get("base_branch", "main")
     state = gitops.own_checkout(checkout, base, target)
     if state["tip"] != target or state["contains"]:
         return None  # main moved on, and its own check comes first; or the checkout is already there
     update = {"project": project, "checkout": checkout, "base": base, "head": head, "target": target,
-              "title": _title(cfg, conn, project, checkout, target, head),
+              "title": f"commit {target[:12]}" if public else _title(cfg, conn, project, checkout, target, head),
               "rollback": recovery.get("rolled_back")}
     deploy = sorted({name for name in state["files"] if _installed(name)})
     if deploy:
@@ -132,7 +141,7 @@ def _check(cfg, conn, project, checkout):
     if reason:
         _refuse(cfg, conn, update, reason, problem)
         return None
-    if not any(name.startswith(CODE_FOLDER) or name == CODE_FILE for name in state["files"]):
+    if not public and not any(name.startswith(CODE_FOLDER) or name == CODE_FILE for name in state["files"]):
         if _fast_forward(conn, update):
             _event(conn, project, "self_update",
                    f"Updated DD's checkout to {target[:12]} ({update['title']}); "
@@ -199,7 +208,7 @@ def announce(cfg, conn, version):
         if restart["revision"] != version:
             warn(f"DD restarted on {version[:12]}, not its update to {restart['revision'][:12]}")
             return
-        alerts.send(cfg, restart["project"], None, f"DD updated to {version[:12]} ({restart['title']})",
+        alerts.send(cfg, restart["project"] or None, None, f"DD updated to {version[:12]} ({restart['title']})",
                     suffix=" update", level="passive")
         _event(conn, restart["project"], "self_update_restarted", f"DD restarted on {version[:12]}")
     except Exception as e:
@@ -235,7 +244,7 @@ def _refuse(cfg, conn, update, reason, problem):
                f"It carries on with {update['head'][:12]}.")
     _event(conn, project, "self_update_refused", message)
     warn(message)
-    alerts.send(cfg, project, None, message, suffix=" update", level="active")
+    alerts.send(cfg, project or None, None, message, suffix=" update", level="active")
 
 
 def _title(cfg, conn, project, checkout, target, head):
@@ -304,7 +313,7 @@ def _event(conn, project, kind, detail):
 
 
 def _warning(conn, project, detail):
-    _event(conn, project, "warning", detail)
+    _event(conn, project or "", "warning", detail)
     warn(f"[{project}] {detail}")
 
 

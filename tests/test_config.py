@@ -25,6 +25,19 @@ class Config(unittest.TestCase):
         c["github"]["private_key_path"] = str(key)
         return c
 
+    def test_public_self_update_setting(self):
+        c = self.base()
+        c["self_update_public_repo"] = "owner/repo"
+        self.assertEqual(config.load(self.write(c))["self_update_public_repo"], "owner/repo")
+        c["self_update"] = None
+        with self.assertRaisesRegex(config.ConfigError, "cannot both"):
+            config.load(self.write(c))
+        del c["self_update"]
+        for value in (None, "", 12, "https://github.com/owner/repo", "owner/..", "owner/repo?x"):
+            c["self_update_public_repo"] = value
+            with self.subTest(value=value), self.assertRaisesRegex(config.ConfigError, "owner/repo"):
+                config.load(self.write(c))
+
     def test_plane_api_url_is_optional_and_validated(self):
         c = self.base()
         self.assertNotIn("api_url", config.load(self.write(c))["plane"])

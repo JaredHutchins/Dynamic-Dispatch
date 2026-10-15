@@ -373,6 +373,29 @@ To see which agent has which story, look for the queued and running log lines:
 
 ## Updating itself after a merge
 
+For an install where DD's public repository is not one of its projects, set
+`"self_update_public_repo": "owner/repo"` in `config.json`, using DD's public
+GitHub repository. Its checkout's `origin` must point to that repository and
+its branch must be `main`. Use this setting instead of `self_update`; config
+validation refuses both settings together, even if one is null.
+
+DD checks main every five minutes using two anonymous GitHub API requests per
+poll (24 per hour, below the unauthenticated limit of 60 per hour per IP shared
+with other clients). No GitHub login is used for these requests. All four
+GitHub Actions test checks from `.github/workflows/tests.yml` must finish with
+`success`: Python 3.11 and 3.13, each in normal and ResourceWarning modes.
+Missing, pending or unsuccessful checks leave DD waiting; an unsuccessful
+result is logged once per commit. Network/API errors warn and retry after the
+same interval. If the test matrix changes, update the expected check names in
+`dispatch/publicupdate.py` too; missing names prevent updates.
+
+After a passed result, DD uses the checkout protections described below,
+including refusing changes to installed deploy files. It stops starting new
+work, lets running work finish, waits one idle cycle, fast-forwards only, then
+exits with code 75 so systemd restarts it. This mode also restarts for
+changes limited to documents or tests. Update titles use the commit ID, so no
+authenticated pull-request lookup is needed.
+
 With `"self_update": "dynamic-dispatch"` in `config.json` (the name of the
 project whose repository is DD itself), DD updates itself. After a merge, it
 waits for its main check to pass on exactly main's latest commit. Then:
@@ -417,7 +440,7 @@ keeps new runs waiting until then.
 This relies on the service file's `Restart=on-failure`: DD exits with code
 75 to restart itself, and systemd starts only a service that failed again.
 Keep that setting. The project needs a `verify_command`, or main is never
-checked and DD never updates itself. Without `self_update`, update by hand
+checked and DD never updates itself. Without either update setting, update by hand
 as below.
 
 ## Updating by hand after a merge
