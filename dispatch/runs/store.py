@@ -153,6 +153,12 @@ CREATE TABLE IF NOT EXISTS assessments (
     alerted INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY(snapshot_id, agent)
 );
+CREATE TABLE IF NOT EXISTS assessment_cooldown_notices (
+    snapshot_id INTEGER NOT NULL,
+    agent TEXT NOT NULL,
+    until TEXT NOT NULL,
+    PRIMARY KEY(snapshot_id, agent, until)
+);
 CREATE TABLE IF NOT EXISTS plan_reports (
     snapshot_id INTEGER PRIMARY KEY,
     project TEXT NOT NULL,

@@ -6,11 +6,12 @@ import os
 import json
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import Mock, patch
 
 import helpers
-from dispatch import assessments, gitops, plans, prompts, runs, worker
+from dispatch import assessments, gitops, plans, prompts, runs, sync, worker
 
 
 class Assessments(unittest.TestCase):
@@ -47,6 +48,71 @@ class Assessments(unittest.TestCase):
 
     def fenced(self, answer=None):
         return '```json\n' + json.dumps(self.answer() if answer is None else answer) + '\n```'
+
+    def test_cooldown_notice_survives_restart_and_announces_extension(self):
+        until = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat(timespec='seconds')
+        runs.save_cooldown(self.conn, 'alpha', until)
+        with patch('dispatch.assessments.alerts.send') as send:
+            snapshot = self.start()
+            self.start()
+            message = sync.assessment_cooldown('Alpha', until)
+            self.assertEqual(self.client.comment.call_count, 2)
+            self.assertEqual(self.client.comment.call_args.args[2], message)
+            send.assert_called_once_with(self.cfg, 'p', 'plan', message, level='passive')
+            self.conn.close()
+            self.conn = runs.connect(Path(self.temp.name) / 'runs.db')
+            self.addCleanup(self.conn.close)
+            self.start()
+            self.assertEqual(self.client.comment.call_count, 2)
+            self.assertEqual(send.call_count, 1)
+            extended = (datetime.fromisoformat(until) + timedelta(hours=1)).isoformat(timespec='seconds')
+            runs.save_cooldown(self.conn, 'alpha', extended)
+            self.start()
+            self.start()
+            self.assertEqual(self.client.comment.call_count, 3)
+            self.assertEqual(send.call_count, 2)
+            self.assertEqual(send.call_args.args[3], sync.assessment_cooldown('Alpha', extended))
+            self.assertEqual(runs.get(self.conn, runs.assessments(self.conn, snapshot['id'])[0]['run_id'])['status'],
+                             'queued')
+
+    def test_assess_reply_names_cooling_agent_and_deadline(self):
+        self.start()
+        until = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat(timespec='seconds')
+        runs.save_cooldown(self.conn, 'alpha', until)
+        record = plans.judge(self.conn, self.client, 'p', self.project, self.plan, 'waiting', 'assess',
+                             {'cycle': self.cycle}, {'cycle': self.stories}, cfg=self.cfg)
+        self.assertEqual(record['reply'], sync.assessment_cooldown('Alpha', until))
+        self.assertIn(datetime.fromisoformat(until).astimezone().strftime('%a %H:%M'), record['reply'])
+
+    def test_no_cooldown_notice_without_cooling_unfinished_agent(self):
+        with patch('dispatch.assessments.alerts.send') as send:
+            snapshot = self.start()
+            self.start()
+            self.assertEqual(self.client.comment.call_count, 1)
+            send.assert_not_called()
+            run = runs.claim_next(self.conn)
+            runs.finish_assessment(self.conn, run['id'], answer=self.answer())
+            runs.release_slot(self.conn, run['id'])
+            runs.save_cooldown(self.conn, run['agent'], '2099-01-01T00:00:00+00:00')
+            self.start()
+            self.assertEqual(self.client.comment.call_count, 1)
+            send.assert_not_called()
+
+    def test_usage_limit_during_assessment_announces_each_new_cooldown(self):
+        snapshot = self.start()
+        beta = runs.assessments(self.conn, snapshot['id'])[1]
+        runs.finish_assessment(self.conn, beta['run_id'], answer=self.answer())
+        for index in range(2):
+            runs.save_cooldown(self.conn, 'alpha', '2000-01-01T00:00:00+00:00')
+            run = runs.claim_next(self.conn)
+            with patch('dispatch.assessments.agents.run', return_value={'usage_limit': True}), \
+                    patch('dispatch.assessments.alerts.send') as send:
+                assessments.ask(self.cfg, self.conn, run, runs.assessment_for_run(self.conn, run['id']), self.temp.name)
+                runs.release_slot(self.conn, run['id'])
+                runs.save_cooldown(self.conn, run['agent'], f'2099-01-0{index + 1}T00:00:00+00:00')
+                self.start()
+                self.start()
+                send.assert_called_once()
 
     def test_snapshot_excludes_plan_and_human_and_stays_fixed(self):
         self.cycle['start_date'] = '2098-12-31T22:00:00Z'

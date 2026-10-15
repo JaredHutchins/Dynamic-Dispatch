@@ -33,7 +33,7 @@ def plan_cycles(conn, client, name, project, approver, cycles, listed, stories, 
             continue
         if plan["status"] == runs.PLAN_NEW:
             plan = introduce_plan(conn, client, name, project, plan, listed[cycle_id])
-        read_replies(conn, client, name, project, approver, whoami(), plan, cycles, stories, cycle_list=cycle_list)
+        read_replies(conn, client, name, project, approver, whoami(), plan, cycles, stories, cycle_list=cycle_list, cfg=cfg)
         plan = runs.cycle_plan(conn, name, cycle_id)
         if plan['status'] == 'approving':
             plan = resume_decision(conn, client, name, project, plan, cycle, stories[cycle_id], whoami)
@@ -153,7 +153,7 @@ def command_after_mention(comment_html, user_id):
     return text.split(SPOT, 1)[1] if SPOT in text else None
 
 
-def read_replies(conn, client, name, project, approver, me, plan, cycles, stories, cycle_list=None):
+def read_replies(conn, client, name, project, approver, me, plan, cycles, stories, cycle_list=None, cfg=None):
     """Act on the approver's commands written since DD's latest question, oldest first, each once."""
     project_id, marker = project["plane_project_id"], question_marker(plan["cycle_id"])
     comments = client.comments(project_id, plan["issue_id"])
@@ -170,7 +170,7 @@ def read_replies(conn, client, name, project, approver, me, plan, cycles, storie
         record = runs.plan_command(conn, name, comment["id"])
         if record is None:
             record = judge(conn, client, name, project, runs.cycle_plan(conn, name, plan["cycle_id"]),
-                           comment["id"], text, cycles, stories, comment, cycle_list=cycle_list)
+                           comment["id"], text, cycles, stories, comment, cycle_list=cycle_list, cfg=cfg)
         if runs.cycle_plan(conn, name, plan['cycle_id'])['status'] == 'approving':
             return
         if record["reply"] and not record["replied"]:
@@ -180,7 +180,7 @@ def read_replies(conn, client, name, project, approver, me, plan, cycles, storie
             runs.mark_plan_replied(conn, name, comment["id"])
 
 
-def judge(conn, client, name, project, plan, comment_id, text, cycles, stories, comment=None, cycle_list=None):
+def judge(conn, client, name, project, plan, comment_id, text, cycles, stories, comment=None, cycle_list=None, cfg=None):
     """Decide one command and save it with its reply and any new status."""
     cycle_id = plan["cycle_id"]
     match = re.match(r"\s*([A-Za-z]+)(.*)", text, re.S)
@@ -189,7 +189,7 @@ def judge(conn, client, name, project, plan, comment_id, text, cycles, stories, 
     if command not in COMMANDS:
         command, reply = "unclear", sync.PLAN_NOT_UNDERSTOOD
     elif command == "assess":
-        reply = (sync.ASSESSMENT_RUNNING if runs.assessment_running(conn, name, cycle_id)
+        reply = (assessments.waiting_reply(conn, name, cycle_id, cfg) if runs.assessment_running(conn, name, cycle_id)
                  else assess_refusal(conn, client, name, project, cycle_id, cycles, stories, cycle_list=cycle_list))
         if not reply:
             # Unchanged stories retry only the failed agents of the latest round; anything else starts a new one.

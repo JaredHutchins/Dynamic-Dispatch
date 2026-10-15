@@ -58,6 +58,7 @@ def start(conn, client, name, project, plan, cycle, stories, cfg):
         alerts.send(cfg, name, plan['issue_id'], message, level='active')
         runs.mark_assessment_alerted(conn, snapshot['id'], item['agent'])
     runs.queue_assessments(conn, snapshot['id'])
+    announce_cooldowns(conn, client, name, project, plan, snapshot, cfg)
 
 
 def validate(text, stories):
@@ -222,3 +223,28 @@ def run_assessment(cfg, conn, run):
                 pass
             except OSError as exc:
                 runs.record_event(conn, run['id'], 'warning', f'Could not discard assessment folder: {exc}')
+
+
+def cooldown_messages(conn, snapshot, cfg):
+    for row in runs.assessment_cooldowns(conn, snapshot['id']):
+        display = (cfg or {}).get('agents', {}).get(row['agent'], {}).get('display_name', row['agent'])
+        yield row, sync.assessment_cooldown(display, row['until'])
+
+
+def waiting_reply(conn, name, cycle_id, cfg=None):
+    snapshot = runs.assessment_snapshot(conn, name, cycle_id)
+    messages = [message for _, message in cooldown_messages(conn, snapshot, cfg)] if snapshot else []
+    return " ".join(messages) or sync.ASSESSMENT_RUNNING
+
+
+def announce_cooldowns(conn, client, name, project, plan, snapshot, cfg):
+    for row, message in cooldown_messages(conn, snapshot, cfg):
+        key = (snapshot['id'], row['agent'], row['until'])
+        if runs.assessment_cooldown_announced(conn, *key):
+            continue
+        digest = hashlib.sha256(json.dumps(key).encode()).hexdigest()
+        marker = f"[dd:assessment-cooldown {digest}]"
+        if not client.has_comment_with(project['plane_project_id'], plan['issue_id'], marker):
+            client.comment(project['plane_project_id'], plan['issue_id'], message, marker=marker)
+        if runs.claim_assessment_cooldown_notice(conn, *key):
+            alerts.send(cfg, name, plan['issue_id'], message, level='passive')

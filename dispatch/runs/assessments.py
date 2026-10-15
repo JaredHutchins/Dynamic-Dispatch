@@ -120,3 +120,27 @@ def assessment_retry(conn, project, cycle, stories):
     if same and any(row['failures'] >= 2 for row in assessments(conn, snapshot['id'])):
         return snapshot['id']
     return None
+
+
+def assessment_cooldowns(conn, snapshot_id):
+    """Unfinished assessors currently waiting on usage, rather than doing work."""
+    return conn.execute(
+        "SELECT a.agent, c.until FROM assessments a JOIN cooldowns c ON c.agent = a.agent "
+        "LEFT JOIN runs r ON r.id = a.run_id "
+        "WHERE a.snapshot_id = ? AND a.answer IS NULL AND a.failures < 2 "
+        "AND c.until > ? AND (r.status IS NULL OR r.status != 'running') ORDER BY a.agent",
+        (snapshot_id, now())).fetchall()
+
+
+def assessment_cooldown_announced(conn, snapshot_id, agent, until):
+    return conn.execute(
+        "SELECT 1 FROM assessment_cooldown_notices WHERE snapshot_id = ? AND agent = ? AND until = ?",
+        (snapshot_id, agent, until)).fetchone() is not None
+
+
+def claim_assessment_cooldown_notice(conn, snapshot_id, agent, until):
+    """Claim before sending the best-effort alert so a restart cannot repeat it."""
+    with conn:
+        return conn.execute(
+            "INSERT OR IGNORE INTO assessment_cooldown_notices VALUES (?, ?, ?)",
+            (snapshot_id, agent, until)).rowcount == 1
