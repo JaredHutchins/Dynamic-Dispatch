@@ -1,5 +1,8 @@
 # Running Dynamic Dispatch as a service
 
+For Docker or Colima, follow [Run DD in a container](CONTAINER.md) from
+prerequisites through setup, health checks and daily operation.
+
 `dynamic-dispatch.service` makes the Pi start Dynamic Dispatch when it boots,
 once the network is up, and start it again 10 seconds after it stops
 unexpectedly. It runs as the account and from the checkout chosen below.
