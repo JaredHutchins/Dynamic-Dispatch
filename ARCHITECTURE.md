@@ -71,6 +71,8 @@ These boundaries make later features additive:
 
 Tests are split by topic in `tests/test_*.py`, with shared fixtures and fake services in `tests/helpers.py`. `tests/test_design_rules.py` guards the database and private-name boundaries, function length, import loops and event reads across `main.py` and `dispatch/`; the other rules are checked at review. Tests use fake services and secrets, never real Plane, GitHub or model providers. The full suite is `python3 -m unittest discover -s tests`, and must also pass with `-W error::ResourceWarning`.
 
+The `Tests` GitHub Actions workflow runs both modes independently on Linux for every pull request and every push to main, using Python 3.11, DD's oldest supported version, and Python 3.13, the version DD's reference install runs. Newer Python releases are not tested until DD passes on them. Verbose output includes the reason for each skip; account, root and service boundaries are faked, and optional dependencies may skip with a reason when absent. The workflow uses no configured secrets, grants only `contents: read`, and does not retain checkout credentials. It uses `pull_request` so fork code runs without privileged access. GitHub records the job results as check runs, readable for a public repository without authentication at `GET /repos/{owner}/{repo}/commits/{sha}/check-runs`. The README badge shows main's push results. These checks are informational; this workflow does not configure branch protection or require checks before merging.
+
 ## 7. Scope
 
 The working loop is board-driven dispatch, isolated worktree and story branch, sandboxed agent and verification, DD's commit/push/PR creation, and human review and merge. Failures surface on the story in Blocked.

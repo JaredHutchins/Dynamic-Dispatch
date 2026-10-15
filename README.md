@@ -1,5 +1,7 @@
 # Dynamic Dispatch
 
+[![Tests on main](https://github.com/JaredHutchins/Dynamic-Dispatch/actions/workflows/tests.yml/badge.svg?branch=main&event=push)](../../actions/workflows/tests.yml?query=branch%3Amain)
+
 Dynamic Dispatch (DD) is an AI agent orchestration system for software work.
 It takes stories from a Plane board, has AI coding agents such as Claude Code
 and Codex build them as pull requests, and keeps those pull requests tested
