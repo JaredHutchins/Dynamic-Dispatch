@@ -23,6 +23,22 @@ ROLLBACK_HELPER = '/usr/local/bin/dd-rollback'
 # Checked at its deployed path, not sandbox.launcher, so config can't point the check at another file.
 LAUNCHER = '/usr/local/bin/dd-agent-run'
 COMMAND_TIMEOUT = 30
+# deploy/Dockerfile sets this; the container has no systemd, and its start step does the services' work.
+CONTAINER_MARKER = 'DD_CONTAINER'
+START_STEP = '/usr/local/bin/dd-container-start'
+CREDENTIAL_FOLDER = '/etc/dd-credentials'
+# deploy/compose.yaml's volumes and the account that writes each; the image fixes the account names.
+VOLUMES = [('DD home', '/home/dd', 'dd'), ('checkout', '/home/dd/checkout', 'dd'),
+           ('config', '/home/dd/config', 'dd'), ('history', '/home/dd/.local/share/dynamic-dispatch', 'dd'),
+           ('repositories', '/srv/dynamic-dispatch/repos', 'dd'),
+           ('story folders', '/srv/dynamic-dispatch/worktrees', 'dd'),
+           ('agent env files', '/etc/dynamic-dispatch', 'root'), ('Gemini home', '/home/dd-gemini', 'dd-gemini')]
+# Where the start step copies each mounted credential for its agent account.
+CREDENTIALS = [('Gemini', '/home/dd-gemini/gemini-credential.json', 'dd-gemini')]
+
+
+def in_container():
+    return os.environ.get(CONTAINER_MARKER) == '1'
 
 
 def service_reason(error, service, credential, fallback):
@@ -139,7 +155,7 @@ def run(path=None, *, project=None):
     _check_git(cfg, check, report)
     accounts = _check_agents(cfg, check, report, require)
     doctor_sandbox.check(cfg, accounts, CHECKOUT, path or config.DEFAULT_CONFIG_PATH, report)
-    _check_services(cfg, accounts, check, require)
+    _check_services(cfg, accounts, check, report, require)
     return int(failed)
 
 
@@ -316,7 +332,41 @@ def _check_agents(cfg, check, report, require):
     return accounts
 
 
-def _check_services(cfg, accounts, check, require):
+def _check_container(check, report, require):
+    doctor_sandbox.check_container([('Volume ' + label, path, login) for label, path, login in VOLUMES],
+                                   [(label + ' credential', path, login) for label, path, login in CREDENTIALS],
+                                   report)
+    def start_step():
+        st = os.lstat(START_STEP)
+        require(stat.S_ISREG(st.st_mode) and st.st_uid == 0 and st.st_mode & 0o111)
+    check('Start step', start_step, '/usr/local/bin/dd-container-start is installed and owned by root.',
+          '/usr/local/bin/dd-container-start is missing or not owned by root; rebuild the image as '
+          'deploy/README.md "Docker" describes.')
+    def installer():
+        require(stat.S_ISREG(os.lstat(CHECKOUT / 'deploy' / 'dd-install').st_mode))
+    check('Installer', installer, "deploy/dd-install is in DD's checkout for the start step to run.",
+          "deploy/dd-install is missing from DD's checkout, so the next start fails; restore the checkout.")
+    def credential_folder():
+        # Its contents are never listed: only root may open it, and the start step reads the mount as root.
+        st = os.lstat(CREDENTIAL_FOLDER)
+        require(stat.S_ISDIR(st.st_mode) and st.st_uid == 0 and not stat.S_IMODE(st.st_mode) & 0o077)
+    check('Credential mount folder', credential_folder, '/etc/dd-credentials is a folder only root can open.',
+          '/etc/dd-credentials is missing or open to accounts other than root; mount the credential file, '
+          'not a folder, as deploy/README.md "A Gemini credential file" describes.')
+
+
+def _check_services(cfg, accounts, check, report, require):
+    if in_container():
+        for name in ('Service', 'Service account', 'Service checkout', 'Rollback service'):
+            report('SKIP', name, "skipped: systemd units don't apply in a container, whose start step "
+                   'starts and recovers DD instead.')
+        _check_container(check, report, require)
+    else:
+        _check_units(check, require)
+    _check_installed(cfg, accounts, check, require)
+
+
+def _check_units(check, require):
     me = pwd.getpwuid(os.geteuid()).pw_name
     service = check('Service', lambda: _unit(SERVICE), 'dynamic-dispatch.service is installed.',
                     'dynamic-dispatch.service is not installed; render and install it as deploy/README.md '
@@ -332,6 +382,9 @@ def _check_services(cfg, accounts, check, require):
           'as deploy/README.md "When a deploy file changes" describes.', skip=missing)
     check('Rollback service', lambda: _unit(ROLLBACK_SERVICE), 'dynamic-dispatch-rollback.service is installed.',
           'dynamic-dispatch-rollback.service is not installed; install it as deploy/README.md "Install (once)" describes.')
+
+
+def _check_installed(cfg, accounts, check, require):
     def helper():
         st = os.lstat(ROLLBACK_HELPER)
         require(stat.S_ISREG(st.st_mode) and st.st_mode & 0o111)

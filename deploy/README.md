@@ -997,6 +997,20 @@ The doctor also checks the rest of the host:
   `sandbox.launcher`. Each failure names the file to reinstall, as described in
   "Install (once)" and "When a deploy file changes" above. Run the doctor as
   DD's account, from its checkout, or the service checks report a mismatch.
+- Container: when `DD_CONTAINER=1` is set, as the image does, the two systemd
+  units don't exist, so the `Service`, `Service account`, `Service checkout`
+  and `Rollback service` checks are skipped with that reason. The rollback
+  helper, launcher and sudo rule are checked as above, and instead of the units
+  the doctor checks that each volume in `deploy/compose.yaml` is a folder its
+  account can write (`dd`'s volumes, root's `/etc/dynamic-dispatch` and
+  `dd-gemini`'s home); that `/usr/local/bin/dd-container-start` is installed
+  and owned by root and `deploy/dd-install` is in the checkout; that
+  `/etc/dd-credentials` is a folder only root can open; and that a copied
+  Gemini credential, if there is one, is readable by `dd-gemini` alone. DD's
+  account can't see into Gemini's private home, which is enough to show the
+  copy is private; the credential and mount are never opened. Run it as DD:
+
+      docker compose -f deploy/compose.yaml exec --user dd dd python3 main.py --doctor --config /home/dd/config/config.json
 
 ## Docker (ARM64 and Intel/AMD64)
 

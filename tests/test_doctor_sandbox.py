@@ -153,3 +153,78 @@ class Sandbox(unittest.TestCase):
                 Path('/work/plan-2-28e174396028f226')])), \
                 mock.patch.object(sandbox.config, 'agent_group', side_effect=[200, 300]):
             self.assertEqual(sandbox._folders(self.cfg, self.cfg['projects']['project'], ['a', 'b'])[0], 'OK')
+
+
+class Container(unittest.TestCase):
+    def setUp(self):
+        self.dd = SimpleNamespace(pw_uid=1001, pw_gid=1001)
+        self.gemini = SimpleNamespace(pw_uid=1002, pw_gid=1002)
+        self.files = {'/': info(), '/home': info(), '/home/dd': info(0o700, uid=1001, gid=1001),
+                      '/home/dd-gemini': info(0o700, uid=1002, gid=1002),
+                      '/home/dd-gemini/gemini-credential.json': info(0o400, uid=1002, gid=1002, directory=False)}
+
+        def lstat(path):
+            if self.files.get(str(path)) is None:
+                raise FileNotFoundError('fake-private-missing')
+            if isinstance(self.files[str(path)], OSError):
+                raise self.files[str(path)]
+            return self.files[str(path)]
+
+        self.enterContext(mock.patch.object(os, 'lstat', side_effect=lstat))
+        self.attrs = self.enterContext(mock.patch.object(os, 'listxattr', return_value=[]))
+        self.enterContext(mock.patch.object(sandbox.pwd, 'getpwnam',
+                                            side_effect=lambda name: {'dd': self.dd, 'dd-gemini': self.gemini}[name]))
+        self.enterContext(mock.patch.object(os, 'getgrouplist', side_effect=lambda name, gid: [gid]))
+        self.opened = self.enterContext(mock.patch('builtins.open', side_effect=AssertionError('secret read')))
+
+    def run_checks(self):
+        results = {}
+        sandbox.check_container([('Volume DD home', '/home/dd', 'dd'), ('Volume Gemini home', '/home/dd-gemini', 'dd-gemini')],
+                                [('Gemini credential', '/home/dd-gemini/gemini-credential.json', 'dd-gemini')],
+                                lambda status, label, reason: results.update({label: (status, reason)}))
+        self.opened.assert_not_called()
+        for status, reason in results.values():
+            self.assertNotIn('/', reason.replace('deploy/', ''))
+        return results
+
+    def test_ok(self):
+        self.assertEqual({label: status for label, (status, reason) in self.run_checks().items()},
+                         {'Volume DD home': 'OK', 'Volume Gemini home': 'OK', 'Gemini credential': 'OK'})
+
+    def test_volume_missing_or_not_writable_fails(self):
+        for change in [None, info(0o500, uid=1001, gid=1001), info(0o777, uid=0, directory=False),
+                       info(0o700, uid=1002, gid=1002)]:
+            with self.subTest(change=change):
+                self.files['/home/dd'] = change
+                self.assertEqual(self.run_checks()['Volume DD home'][0], 'FAIL')
+
+    def test_group_write_is_enough(self):
+        self.files['/home/dd'] = info(0o770, uid=0, gid=1001)
+        self.assertEqual(self.run_checks()['Volume DD home'][0], 'OK')
+
+    def test_uncertain_metadata_warns(self):
+        self.attrs.return_value = ['system.posix_acl_access']
+        results = self.run_checks()
+        self.assertTrue(all(status == 'WARN' for status, reason in results.values()))
+
+    def test_no_credential_mounted(self):
+        self.files['/home/dd-gemini/gemini-credential.json'] = None
+        self.assertEqual(self.run_checks()['Gemini credential'][0], 'OK')
+
+    def test_credential_readable_by_others_fails(self):
+        for change in [info(0o440, uid=1002, directory=False), info(0o404, uid=1002, directory=False),
+                       info(0o400, uid=1001, directory=False), info(0o700, uid=1002)]:
+            with self.subTest(change=change):
+                self.files['/home/dd-gemini/gemini-credential.json'] = change
+                self.assertEqual(self.run_checks()['Gemini credential'][0], 'FAIL')
+
+    def test_private_home_hides_credential_from_dd(self):
+        self.files['/home/dd-gemini/gemini-credential.json'] = PermissionError('fake-private')
+        self.assertEqual(self.run_checks()['Gemini credential'][0], 'OK')
+        self.files['/home/dd-gemini'] = info(0o750, uid=1002, gid=1002)
+        self.assertEqual(self.run_checks()['Gemini credential'][0], 'WARN')
+
+    def test_symlinked_credential_warns(self):
+        self.files['/home/dd-gemini/gemini-credential.json'] = SimpleNamespace(
+            st_mode=stat.S_IFLNK | 0o777, st_uid=1002, st_gid=1002)
+        self.assertEqual(self.run_checks()['Gemini credential'][0], 'WARN')

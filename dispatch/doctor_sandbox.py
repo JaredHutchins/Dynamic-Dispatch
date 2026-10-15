@@ -124,3 +124,47 @@ def _folders(cfg, project, names):
     if folders and len(groups) > 1:
         return 'WARN', 'Folder groups and modes match project agents; verify each folder belongs to the agent assigned its story.'
     return 'OK', 'Existing story folders use project agent groups and mode 2770; no folders were changed.'
+
+
+def _lookup(login):
+    account = pwd.getpwnam(login)
+    return account, set(os.getgrouplist(login, account.pw_gid)) | {account.pw_gid}
+
+
+def _volume(path, account, groups):
+    try:
+        info = _metadata(path)
+    except FileNotFoundError:
+        return 'FAIL', 'Folder is missing; mount every volume deploy/compose.yaml lists.'
+    if stat.S_ISDIR(info.st_mode) and _access(path, account, groups, 2) and _access(path, account, groups, 1):
+        return 'OK', 'Folder exists and owner, group and mode let its account write; nothing was written.'
+    return 'FAIL', ("Folder isn't writable by its account; restart the container so its start step and "
+                    'installer set the owner, as deploy/README.md "Docker" describes.')
+
+
+def _private(info, account):
+    return info.st_uid == account.pw_uid and not stat.S_IMODE(info.st_mode) & 0o077
+
+
+def _credential(path, account, groups):
+    try:
+        info = _metadata(path)
+    except FileNotFoundError:
+        return 'OK', 'No credential copy exists for this agent, so none can be exposed.'
+    except PermissionError:
+        # DD's account can't see into an agent's private home, which is what keeps the copy private.
+        if _private(_metadata(path.parent), account):
+            return 'OK', 'Only its agent account can open the folder holding it; the file was not opened.'
+        raise
+    if stat.S_ISREG(info.st_mode) and _private(info, account):
+        return 'OK', 'Owned by its agent account with no group or other access; the file was not opened.'
+    return 'FAIL', ('Readable beyond its agent account; restart the container so its start step copies it with mode 400, '
+                    'as deploy/README.md "A Gemini credential file" describes.')
+
+
+def check_container(volumes, credentials, report):
+    """Report each container volume's and credential copy's access for its account, from metadata alone."""
+    for label, path, login in volumes:
+        _judge(report, label, lambda: _volume(Path(path), *_lookup(login)))
+    for label, path, login in credentials:
+        _judge(report, label, lambda: _credential(Path(path), *_lookup(login)))
