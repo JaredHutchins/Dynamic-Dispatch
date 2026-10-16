@@ -20,7 +20,7 @@ Evaluate the code against these priorities, in order:
 2. Edge Cases & Error Handling: Missing checks for empty input, negative numbers, wrong types, unhandled failures.
 3. Security: Injection risks, exposed secrets, unvalidated input — flag anything relevant even in a small script.
 4. Performance & Resource Use: Unnecessary loops, inefficient patterns, anything that would degrade at scale.
-5. Convention & Docs: Does it follow <conventions>? Was a changelog/doc entry added if the task warranted one?
+5. Convention & Docs: Does it follow <conventions>? Did every change people would notice (new or changed behaviour, commands, settings, setup steps, requirements or alerts) update `README.md` and the relevant guide under `deploy/` in the same pull request? A missing update is at least a Medium finding.
 6. Structural Health: Does this change add another substantial, distinct piece of functionality to a file that already holds several unrelated ones? A single well-scoped function or class living alongside related code is fine, regardless of its length. The problem is accumulation — a file becoming a dumping ground for multiple large, unrelated responsibilities that each warrant their own module. Flag it if this change is the one that tips a file into that territory, and suggest where the logic should actually live instead.
 7. Design rules: Check every rule below. Any violation is at least a Medium finding, even if it is disclosed in the summary.
    - Does all database access go through the `dispatch/runs/` package, with other modules calling runs functions and never running SQL themselves?
