@@ -7,6 +7,7 @@ import queue
 import secrets
 import string
 import threading
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -209,6 +210,8 @@ class Alerts:
                             if result.get('code') != 200:
                                 raise ValueError('Bark refused alert')
                     except Exception as error:
+                        if isinstance(error, urllib.error.HTTPError):
+                            error.close()
                         self.warning(project, issue_id, row, error)
                     else:
                         delivered.add(device)

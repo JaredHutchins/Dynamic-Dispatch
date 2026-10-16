@@ -7,13 +7,12 @@ import json
 import subprocess
 import tempfile
 import unittest
-import urllib.error
 import warnings
 from pathlib import Path
 from unittest import mock
 
 from dispatch import config, github, plane, plane_apps, redact, setup
-from helpers import real_gh_request, real_plane_request
+from helpers import http_error, real_gh_request, real_plane_request
 
 # Fake secrets, made up for these tests.
 ORCH = 'fake-orchestrator-plane-token'
@@ -44,7 +43,8 @@ class Response(io.BytesIO):
 class Services:
     """Plane and GitHub as setup sees them. Refusals echo the credential, as a careless server might."""
 
-    def __init__(self, plane_api=PLANE):
+    def __init__(self, test, plane_api=PLANE):
+        self.test = test
         self.plane_api = plane_api
         self.permissions = dict(PERMISSIONS)
         # Permissions for the next installation tokens issued, before falling back to self.permissions.
@@ -52,7 +52,7 @@ class Services:
         self.issued = 0
 
     def refuse(self, url, code, credential):
-        return urllib.error.HTTPError(url, code, 'refused', {}, io.BytesIO(f'bad credential {credential}'.encode()))
+        return http_error(self.test, url, code, 'refused', {}, io.BytesIO(f'bad credential {credential}'.encode()))
 
     def __call__(self, request, timeout=None):
         url = request.full_url
@@ -123,7 +123,7 @@ class SetupTests(unittest.TestCase):
         self.home = Path(directory.name)
         self.path = self.home / 'checkout' / 'config.json'
         self.path.parent.mkdir()
-        self.services = Services()
+        self.services = Services(self)
         # Other tests replace the clients' requests; these run the real clients against fake replies.
         self.enterContext(mock.patch.object(github, '_request', real_gh_request))
         self.enterContext(mock.patch.object(plane.Plane, '_request', real_plane_request))
@@ -244,7 +244,7 @@ class SetupTests(unittest.TestCase):
         self.assert_no_secret_leaked()
 
     def test_plane_cloud_with_an_orchestrator_app(self):
-        self.services = Services('https://api.plane.so')
+        self.services = Services(self, 'https://api.plane.so')
         bot = {'client_id': 'orchestrator-app', 'client_secret': ORCH_APP, 'app_installation_id': 'orchestrator-install'}
         self.path.write_text(json.dumps({'plane': {'orchestrator_bot': bot}, 'projects': {},
                                          'db_path': str(self.home / 'runs.db'),
@@ -307,7 +307,7 @@ class SetupTests(unittest.TestCase):
         self.assert_no_secret_leaked()
 
     def test_custom_api_address_and_rejected_orchestrator_bot(self):
-        self.services = Services('https://api.example.com')
+        self.services = Services(self, 'https://api.example.com')
         answers = [PLANE, 'https://api.example.com', 'workspace', 'yes', 'orchestrator-app',
                    WRONG, 'orchestrator-install', '', '', '', '', '', ORCH_APP, '', '',
                    'no', GH_TOKEN, 'reviewer', 'codex', 'no', CODEX, '', 'codex@example.com',

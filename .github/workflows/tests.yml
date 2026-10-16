@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ['3.11', '3.13']
+        python: ['3.11', '3.13', '3.x']
         mode: [normal, ResourceWarning]
     steps:
       - uses: actions/checkout@v7

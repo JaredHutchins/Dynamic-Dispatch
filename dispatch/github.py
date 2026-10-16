@@ -68,10 +68,11 @@ def _request(method, path, token, payload=None, *, login_key=None, expiry=False)
             body = resp.read()
             return json.loads(body) if body else {}
     except urllib.error.HTTPError as e:
-        if e.code == 401:
-            logins.login(key, name, where + " (HTTP 401)", True)
-        detail = e.read().decode(errors="replace")[:500]
-        raise GitHubError(scrub(f"{method} {path} -> {e.code}: {detail}"), status=e.code) from None
+        with e:
+            if e.code == 401:
+                logins.login(key, name, where + " (HTTP 401)", True)
+            detail = e.read().decode(errors="replace")[:500]
+            raise GitHubError(scrub(f"{method} {path} -> {e.code}: {detail}"), status=e.code) from None
     except urllib.error.URLError as e:
         raise GitHubError(scrub(f"{method} {path} -> {e.reason}")) from e
 

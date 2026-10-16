@@ -15,6 +15,7 @@ Set DD_TEST_GIT to a git binary if the one on PATH is unusable.
 
 import json, os, re, shutil, subprocess, sys, tempfile, unittest
 from unittest import mock
+from urllib.error import HTTPError
 from pathlib import Path
 
 from unraisable import install
@@ -39,6 +40,13 @@ MODEL = "model-token-DDDDDDDD"
 CODEX = "codex-token-FFFFFFFF"
 S_IP, S_REV, S_BLK, S_BACK = "st-inprogress", "st-review", "st-blocked", "st-backlog"
 PID = "proj-1"
+
+
+def http_error(test, *args, **kwargs):
+    """Clean up even error responses prepared but never consumed by a test."""
+    error = HTTPError(*args, **kwargs)
+    test.addCleanup(error.close)
+    return error
 
 
 def git(*args, cwd):
