@@ -291,8 +291,8 @@ code. An update that changes those installed files is never held back: DD
 updates its checkout and restarts as for a code update, and the start step's
 installer installs the new files before DD starts. If the installer fails, the
 start counts as a failure, and recovery returns DD to its last good version
-and logs why (see troubleshooting). Because of the planned-restart
-exemption, that can take up to five minutes after the update's restart.
+and logs why (see troubleshooting). The planned-restart exemption does not apply
+in containers, so recovery runs as soon as the failure limit is reached.
 
 Image, Compose and container-start changes (`deploy/Dockerfile`,
 `deploy/compose.yaml` and `deploy/dd-container-start`) take effect only when

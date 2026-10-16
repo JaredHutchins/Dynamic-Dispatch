@@ -238,6 +238,7 @@ class RealRollback(Base):
         self.assertIn(f'DD rolled back to {good[:12]}', output.getvalue())
 
 
+    @mock.patch.dict(os.environ, {'DD_CONTAINER': '1'})
     def test_an_update_whose_installer_fails_returns_to_last_good(self):
         """An installed-file update restarts the container; its installer failing rolls it back."""
         checkout = self.tmp / 'container-checkout'
@@ -280,22 +281,16 @@ class RealRollback(Base):
                     self.assertEqual(str(error), 'deploy/dd-install failed')
             return output.getvalue()
 
-        # Within five minutes of the update's restart, the planned-restart exemption holds off rollback.
+        # A planned update restart does not delay recovery at the failure limit.
         for _ in range(start.FAILURES):
             start_container()
-        self.assertIn('after a planned restart', start_container())
-        self.assertEqual(installed, [update] * (start.FAILURES + 1))
-        installed.clear()
-        state = runs.rollback_state(checkout)
-        state['planned_restart'] -= 301
-        runs.save_rollback_state(checkout, state)
-        for _ in range(start.FAILURES - 1):
-            start_container()
+        self.assertEqual(installed, [update] * start.FAILURES)
+        self.assertEqual(git('rev-parse', 'HEAD', cwd=checkout).strip(), update)
         output = start_container()
         self.assertIn(f'DD failed to start {start.FAILURES} times within 5 minutes', output)
         self.assertIn(f'DD rolled back to {good[:12]} because {update[:12]} kept failing to start', output)
         # The installer runs again from the rolled-back checkout, installs, and DD starts.
-        self.assertEqual(installed, [update] * (start.FAILURES - 1) + [good, 'DD'])
+        self.assertEqual(installed, [update] * start.FAILURES + [good, 'DD'])
         self.assertEqual(git('rev-parse', 'HEAD', cwd=checkout).strip(), good)
         self.assertEqual(runs.rollback_state(checkout)['failed'], update)
 
