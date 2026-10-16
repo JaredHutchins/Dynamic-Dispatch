@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 
 from dispatch import doctor, github, gitops, plane, proc, runs
 import main
+import helpers
 from helpers import real_gh_request, real_plane_request
 
 
@@ -617,12 +618,12 @@ class ServiceErrors(unittest.TestCase):
     def test_http_status_is_public(self):
         for status in (401, 403, 404):
             with self.subTest(status=status):
-                error = urllib.error.HTTPError('https://github.invalid', status, 'private', {}, io.BytesIO(b'private'))
+                error = helpers.http_error(self, 'https://github.invalid', status, 'private', {}, io.BytesIO(b'private'))
                 with mock.patch('urllib.request.urlopen', side_effect=error):
                     with self.assertRaises(github.GitHubError) as raised:
                         github.repository('example/repo', 'fake-token')
                 self.assertEqual(raised.exception.status, status)
-                error.close()
+                self.assertTrue(error.closed)
 
     def test_app_token_preserves_status_and_network_cause(self):
         settings = {'app_id': 'fake-app', 'installation_id': 'fake-install', 'private_key_path': 'fake-path'}

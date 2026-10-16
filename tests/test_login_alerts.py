@@ -41,14 +41,15 @@ class LoginAlerts(unittest.TestCase):
     def assert_cycle(self, call, failure, success, exception):
         for outcome in (failure, failure, success, failure):
             if isinstance(outcome, urllib.error.HTTPError):
-                outcome = urllib.error.HTTPError(outcome.url, outcome.code, outcome.msg,
-                                                 outcome.headers, io.BytesIO())
-                self.addCleanup(outcome.close)
+                outcome = helpers.http_error(self, outcome.url, outcome.code, outcome.msg,
+                                             outcome.headers, io.BytesIO())
             with mock.patch('urllib.request.urlopen', side_effect=outcome if isinstance(outcome, Exception) else None,
                             return_value=outcome):
                 if isinstance(outcome, Exception):
                     with self.assertRaises(exception):
                         call()
+                    if isinstance(outcome, urllib.error.HTTPError):
+                        self.assertTrue(outcome.closed)
                 else:
                     call()
         self.assertEqual(self.send.call_count, 2)
@@ -60,14 +61,14 @@ class LoginAlerts(unittest.TestCase):
                 self.send.reset_mock()
                 client = plane.Plane('http://plane.invalid', 'test', f'fake-{name}-{code}',
                                      'Plane login for ' + name)
-                error = urllib.error.HTTPError('fake', code, 'rejected', {}, io.BytesIO())
+                error = helpers.http_error(self, 'fake', code, 'rejected', {}, io.BytesIO())
                 self.assert_cycle(lambda: client.get('/test'), error, self.response(), plane.PlaneError)
                 self.assertIn(name, self.send.call_args.args[3])
 
     def test_github_api_and_installation(self):
         for app in (False, True):
             self.send.reset_mock()
-            error = urllib.error.HTTPError('fake', 401, 'rejected', {}, io.BytesIO())
+            error = helpers.http_error(self, 'fake', 401, 'rejected', {}, io.BytesIO())
             if app:
                 cfg = dict(app_id='fake-app', installation_id='fake-install', private_key_path='fake-path')
                 call = lambda: github.token(cfg)
