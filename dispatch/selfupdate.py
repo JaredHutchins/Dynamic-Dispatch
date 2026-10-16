@@ -9,7 +9,9 @@ updates on GitHub checks without needing a DD project or GitHub login.
 
 What the update changes decides what happens:
   - deploy files DEPLOY_FILES lists as installed: DD sends one alert with the
-    steps to run deploy/dd-install and waits to be updated by hand;
+    steps to run deploy/dd-install and waits to be updated by hand. In a
+    container they restart DD instead, like code, since the container's start
+    step re-runs the installer before DD starts;
   - dispatch/ or main.py: no new run starts while runs already going finish.
     Once a whole cycle has found nothing running, so alerts the last runs
     queued have gone, DD fast-forwards the checkout and exits with EXIT_CODE,
@@ -17,7 +19,8 @@ What the update changes decides what happens:
   - anything else (documents, including *.md under deploy/, tests, and deploy
     files that run from the checkout, such as deploy/dd-install, or that only
     the container image uses): DD fast-forwards the checkout and carries on,
-    without restarting.
+    without restarting. In a container, a change to an image file also sends
+    one alert saying to rebuild the image.
 
 A checkout with local changes, manually off main, or that can't be fast-forwarded is
 left alone, with one alert per commit. Errors, a failed fast-forward among
@@ -30,7 +33,7 @@ import shlex
 import time
 from pathlib import Path
 
-from . import alerts, config, github, gitops, publicupdate, mainhealth, plane, runs, sync
+from . import alerts, config, container, github, gitops, publicupdate, mainhealth, plane, runs, sync
 from .redact import log, scrub, warn
 from .stories import story_ref
 
@@ -40,10 +43,11 @@ TITLE_LIMIT = 200
 
 CODE_FOLDER, CODE_FILE, DEPLOY = "dispatch/", "main.py", "deploy/"
 # The one list of how each deploy file reaches the machine: "installed" files are
-# copied out of the checkout, so a change to one waits for deploy/dd-install;
-# "checkout" files run from the checkout, "documentation" is only read, and
-# "image" files only take effect when someone rebuilds the container image, so
-# those update normally. A test fails if a file in deploy/ is missing here.
+# copied out of the checkout, so a change to one waits for deploy/dd-install (in a
+# container, for the restart whose start step runs it); "checkout" files run from
+# the checkout, "documentation" is only read, and "image" files only take effect
+# when someone rebuilds the container image, so those update normally. A test
+# fails if a file in deploy/ is missing here.
 DEPLOY_FILES = {
     "deploy/Dockerfile": "image",
     "deploy/compose.yaml": "image",
@@ -59,6 +63,8 @@ DEPLOY_FILES = {
     "deploy/CONTAINER.md": "documentation",
 }
 INSTALLER_AGENTS = {"dd-agent": "claude", "dd-codex": "codex", "dd-gemini": "gemini"}
+# deploy/CONTAINER.md's rebuild, with the dc helper that guide defines.
+REBUILD = "dc up -d --build"
 
 # The pending update, and whether a cycle has already found nothing running for
 # it. In memory only: after a restart, DD just waits one more cycle.
@@ -130,7 +136,8 @@ def _checked_update(cfg, conn, project, checkout, target, base, *, public=False)
               "title": f"commit {target[:12]}" if public else _title(cfg, conn, project, checkout, target, head),
               "rollback": recovery.get("rolled_back")}
     deploy = sorted({name for name in state["files"] if _installed(name)})
-    if deploy:
+    in_container = container.in_container()
+    if deploy and not in_container:
         _refuse(cfg, conn, update, "deploy", _install_steps(cfg, checkout, deploy))
         return None
     if state["dirty"]:
@@ -147,7 +154,12 @@ def _checked_update(cfg, conn, project, checkout, target, base, *, public=False)
     if reason:
         _refuse(cfg, conn, update, reason, problem)
         return None
-    if not public and not any(name.startswith(CODE_FOLDER) or name == CODE_FILE for name in state["files"]):
+    image = sorted(name for name in state["files"] if DEPLOY_FILES.get(name) == "image")
+    if image and in_container:
+        _rebuild(cfg, conn, update, image)
+    # Installed files only get this far in a container, whose start step installs them on the restart.
+    if not public and not deploy and not any(name.startswith(CODE_FOLDER) or name == CODE_FILE
+                                             for name in state["files"]):
         if _fast_forward(conn, update):
             _event(conn, project, "self_update",
                    f"Updated DD's checkout to {target[:12]} ({update['title']}); "
@@ -250,6 +262,23 @@ def _refuse(cfg, conn, update, reason, problem):
                f"It carries on with {update['head'][:12]}.")
     _event(conn, project, "self_update_refused", message)
     warn(message)
+    alerts.send(cfg, project or None, None, message, suffix=" update", level="active")
+
+
+def _rebuild(cfg, conn, update, files):
+    """Say once per commit that the container's image must be rebuilt for files to take effect."""
+    project, target = update["project"], update["target"]
+    if not runs.claim_self_update_notice(conn, target, "image"):
+        return
+    title = update["title"]
+    if len(title) > 40:
+        title = title[:39] + "…"
+    message = (f"DD is updating itself to {target[:12]} ({title}), which changes {', '.join(files)}. "
+               "They take effect only when the image is rebuilt: on the host, in DD's folder, run "
+               f"git pull, then {REBUILD} (the dc helper is in deploy/CONTAINER.md). "
+               "DD carries on with the new checkout meanwhile.")
+    _event(conn, project, "self_update_rebuild", message)
+    log(message)
     alerts.send(cfg, project or None, None, message, suffix=" update", level="active")
 
 

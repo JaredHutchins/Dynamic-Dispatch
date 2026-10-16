@@ -10,7 +10,7 @@ import sys
 import http.client
 from urllib.parse import urlsplit
 
-from . import config, doctor_sandbox, github, gitops, plane, proc, runs
+from . import config, container, doctor_sandbox, github, gitops, plane, proc, runs
 from .redact import MIN_SECRET_LENGTH
 
 MIN_PYTHON = (3, 11)
@@ -23,8 +23,6 @@ ROLLBACK_HELPER = '/usr/local/bin/dd-rollback'
 # Checked at its deployed path, not sandbox.launcher, so config can't point the check at another file.
 LAUNCHER = '/usr/local/bin/dd-agent-run'
 COMMAND_TIMEOUT = 30
-# deploy/Dockerfile sets this; the container has no systemd, and its start step does the services' work.
-CONTAINER_MARKER = 'DD_CONTAINER'
 START_STEP = '/usr/local/bin/dd-container-start'
 CREDENTIAL_FOLDER = '/etc/dd-credentials'
 # deploy/compose.yaml's volumes and the account that writes each; the image fixes the account names.
@@ -46,10 +44,6 @@ CONTAINER_AGENTS = {
     'gemini': ('Gemini', 'gemini', 'dd-gemini', '/home/dd-gemini', ['/etc/dynamic-dispatch/gemini.env'],
                ['/home/dd-gemini/gemini-credential.json']),
 }
-
-
-def in_container():
-    return os.environ.get(CONTAINER_MARKER) == '1'
 
 
 def service_reason(error, service, credential, fallback):
@@ -393,7 +387,7 @@ def _check_container(check, report, require):
 
 
 def _check_services(cfg, accounts, check, report, require):
-    if in_container():
+    if container.in_container():
         for name in ('Service', 'Service account', 'Service checkout', 'Rollback service'):
             report('SKIP', name, "skipped: systemd units don't apply in a container, whose start step "
                    'starts and recovers DD instead.')

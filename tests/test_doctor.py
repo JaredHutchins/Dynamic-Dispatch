@@ -14,7 +14,7 @@ import urllib.error
 from unittest import mock
 from datetime import datetime, timedelta, timezone
 
-from dispatch import doctor, github, gitops, plane, proc, runs
+from dispatch import container, doctor, github, gitops, plane, proc, runs
 import main
 import helpers
 from helpers import real_gh_request, real_plane_request
@@ -51,7 +51,7 @@ class Doctor(unittest.TestCase):
         self.mocks = [self.enterContext(p) for p in patches]
         # The marker from the image would switch the doctor to its container checks.
         self.enterContext(mock.patch.dict(os.environ))
-        os.environ.pop(doctor.CONTAINER_MARKER, None)
+        os.environ.pop(container.MARKER, None)
         self.host()
         self.fake_host()
 
@@ -476,7 +476,7 @@ class ContainerDoctor(Doctor):
 
     def setUp(self):
         super().setUp()
-        os.environ[doctor.CONTAINER_MARKER] = '1'
+        os.environ[container.MARKER] = '1'
         os.environ.pop(doctor.AGENTS_SETTING, None)
         self.volumes = self.enterContext(mock.patch.object(doctor.doctor_sandbox, 'check_container',
                                                            side_effect=self.container_checks))
@@ -616,7 +616,7 @@ class ContainerDoctor(Doctor):
     def test_only_the_image_marker_counts(self):
         for value in ('0', '', 'true'):
             with self.subTest(value=value):
-                os.environ[doctor.CONTAINER_MARKER] = value
+                os.environ[container.MARKER] = value
                 code, output = self.run_doctor()
                 self.assertIn('OK Service: dynamic-dispatch.service is installed.', output)
                 self.assertNotIn('Start step', output)

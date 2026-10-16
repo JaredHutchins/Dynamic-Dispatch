@@ -102,6 +102,22 @@ class Recovery(Base):
                 self.assertEqual(runs.rollback_state(self.checkout), state)
                 self.assertEqual(git('rev-parse', 'HEAD', cwd=self.checkout).strip(), self.bad)
 
+    def test_host_planned_restart_exemption_is_unchanged(self):
+        for marker in (None, '0'):
+            with self.subTest(marker=marker), mock.patch.dict(helper.os.environ):
+                helper.os.environ.pop('DD_CONTAINER', None)
+                if marker is not None:
+                    helper.os.environ['DD_CONTAINER'] = marker
+                state = dict(last_good=self.good, planned_restart=1000)
+                runs.save_rollback_state(self.checkout, state)
+                with mock.patch.object(helper.time, 'time', return_value=1001):
+                    result = helper.recover(self.checkout)
+                self.assertTrue(result['restart'])
+                self.assertIsNone(result['message'])
+                self.assertIn('planned restart', result['log'])
+                self.assertEqual(runs.rollback_state(self.checkout), state)
+                self.assertEqual(git('rev-parse', 'HEAD', cwd=self.checkout).strip(), self.bad)
+
     def test_expired_planned_restart_does_not_suppress_crash_loop_rollback(self):
         runs.save_rollback_state(self.checkout, dict(last_good=self.good, planned_restart=699))
         with mock.patch.object(helper.time, 'time', return_value=1000):
