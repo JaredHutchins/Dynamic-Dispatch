@@ -3,9 +3,9 @@
 
 As root it fixes the volumes' owners, clones DD on first start, lets the
 installed rollback helper recover from a crash loop, re-runs the checkout's
-installer and hands the Gemini credential to Gemini's account. Then it drops
-to DD's account for good and runs DD once; Docker starts the container again
-when DD exits.
+installer for the agents the image includes and hands a mounted Gemini
+credential to Gemini's account. Then it drops to DD's account for good and runs
+DD once; Docker starts the container again when DD exits.
 """
 
 import json
@@ -19,12 +19,18 @@ import sys
 import tempfile
 import time
 
-DD_USER, GEMINI_USER = 'dd', 'dd-gemini'
+DD_USER = 'dd'
+# Each agent the image can include and its account, as deploy/dd-install names them.
+AGENT_ACCOUNTS = {'claude': 'dd-agent', 'codex': 'dd-codex', 'gemini': 'dd-gemini'}
+# deploy/Dockerfile's build setting. An image built before it existed included only Gemini.
+AGENTS_SETTING, DEFAULT_AGENTS = 'DD_AGENTS', 'gemini'
 HOME = Path('/home/dd')
 CHECKOUT = HOME / 'checkout'
 CONFIG = HOME / 'config'
 HISTORY = HOME / '.local/share/dynamic-dispatch'
 GEMINI_HOME = Path('/home/dd-gemini')
+# Each agent's home is its own volume in deploy/compose.yaml.
+AGENT_HOMES = {'claude': Path('/home/dd-agent'), 'codex': Path('/home/dd-codex'), 'gemini': GEMINI_HOME}
 # The mount sits in a root-only folder, so only the copy Gemini's account owns is readable.
 CREDENTIALS = Path('/etc/dd-credentials')
 CREDENTIAL_MOUNT = CREDENTIALS / 'gemini.json'
@@ -33,12 +39,22 @@ PUBLIC_REPO = 'https://github.com/JaredHutchins/Dynamic-Dispatch.git'
 SCRIPT = '/usr/local/bin/dd-container-start'
 ROLLBACK = '/usr/local/bin/dd-rollback'
 PYTHON = '/usr/bin/python3'
-INSTALL = [PYTHON, 'deploy/dd-install', '--container', '--dd-user', DD_USER, '--agents', 'gemini']
+INSTALL = [PYTHON, 'deploy/dd-install', '--container', '--dd-user', DD_USER, '--agents']
 # The Pi's limits: StartLimitBurst=3 in StartLimitIntervalSec=300, RestartSec=10.
 FAILURES, WINDOW, RESTART_DELAY = 3, 300, 10
 UPDATE_EXIT = 75  # DD's self-update restart, which is planned rather than a failure
 DOWN = 3  # the decision's exit code while recovery is latched off
 DOWN_POLL = 60
+
+
+def included_agents():
+    """The agents the image was built with, in the order given, each once."""
+    agents = list(dict.fromkeys(os.environ.get(AGENTS_SETTING, DEFAULT_AGENTS).split()))
+    unknown = [agent for agent in agents if agent not in AGENT_ACCOUNTS]
+    if unknown or not agents:
+        raise RuntimeError(f'{AGENTS_SETTING} must name agents from {", ".join(AGENT_ACCOUNTS)}; '
+                           'rebuild the image with a corrected setting')
+    return agents
 
 
 def as_dd(*args):
@@ -165,10 +181,14 @@ def drop_to_dd(account):
 
 
 def bootstrap():
-    dd, gemini = pwd.getpwnam(DD_USER), pwd.getpwnam(GEMINI_USER)
+    agents = included_agents()
+    dd = pwd.getpwnam(DD_USER)
+    accounts = {agent: pwd.getpwnam(AGENT_ACCOUNTS[agent]) for agent in agents}
     for path in (HOME, CHECKOUT, CONFIG, HISTORY):
         own(path, dd, 0o700)
-    own(GEMINI_HOME, gemini, 0o700)
+    # Only the included agents' homes: a left-out agent has no account to own its volume.
+    for agent, account in accounts.items():
+        own(AGENT_HOMES[agent], account, 0o700)
     if not any(CHECKOUT.iterdir()):
         print(f'First start: cloning {PUBLIC_REPO} into {CHECKOUT}', flush=True)
         if as_dd('git', '-c', 'core.hooksPath=/dev/null', 'clone', '--branch', 'main',
@@ -178,11 +198,12 @@ def bootstrap():
         raise RuntimeError(f'{CHECKOUT} is neither empty nor a Git checkout')
     # Recovery comes first, so the installer below matches whichever version runs.
     wait_while_down()
-    if subprocess.run(INSTALL, cwd=CHECKOUT).returncode:
+    if subprocess.run(INSTALL + agents, cwd=CHECKOUT).returncode:
         # A broken installer counts, so an update that breaks it is rolled back too.
         as_dd(PYTHON, SCRIPT, 'failure')
         raise RuntimeError('deploy/dd-install failed')
-    hand_over_credential(gemini)
+    if 'gemini' in accounts:
+        hand_over_credential(accounts['gemini'])
     # Root is given up before any of DD's code runs; sudo still allows only the agent launcher.
     drop_to_dd(dd)
 
