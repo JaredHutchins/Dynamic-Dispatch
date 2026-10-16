@@ -131,7 +131,8 @@ class Restarts(Base):
         self.assertEqual([r["status"] for r in rows], [runs.INTERRUPTED, runs.DONE], rows[-1])
         self.assertEqual(len(sandbox_calls), 1)  # verify only
         self.assertEqual(git("rev-parse", "dd-7", cwd=self.origin).strip(), committed)
-        self.assertEqual(rows[-1]["summary"], worker.RESTARTED_SUMMARY)
+        # The Docs line the earlier run's check passed ends the description.
+        self.assertEqual(rows[-1]["summary"], worker.RESTARTED_SUMMARY + "\n\n" + rows[0]["docs_line"])
 
     def test_pushed_work_is_kept(self):
         self.add_issue()
@@ -146,7 +147,8 @@ class Restarts(Base):
         self.assertEqual(git("rev-parse", "dd-7", cwd=self.origin).strip(), pushed)
         [pr] = prs.values()
         self.assertEqual(rows[-1]["pr_url"], pr["url"])
-        self.assertEqual(rows[-1]["summary"], worker.RESTARTED_PR_SUMMARY)
+        # The Docs line the earlier run's check passed ends the description.
+        self.assertEqual(rows[-1]["summary"], worker.RESTARTED_PR_SUMMARY + "\n\n" + rows[0]["docs_line"])
 
     def test_open_pull_request_is_reused(self):
         self.add_issue()

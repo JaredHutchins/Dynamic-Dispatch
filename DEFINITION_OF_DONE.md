@@ -50,7 +50,8 @@ review.
     opened or updated, and sends a missing or wrong line back. For this
     project, documentation is `README.md`, `ARCHITECTURE.md`, `SECURITY.md`,
     `DEFINITION_OF_DONE.md`, `REVIEW_RUBRIC.md`, `STORY_TEMPLATE.md` and
-    `deploy/*.md`; changes only to `tests/` never need it.
+    `deploy/*.md`; changes only to `tests/` need no documentation
+    update, but still need the line.
 11. **Decisions are written down.** If the change alters a design decision,
     `ARCHITECTURE.md` is updated in the same pull request.
 

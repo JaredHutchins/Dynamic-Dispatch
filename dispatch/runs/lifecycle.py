@@ -149,6 +149,12 @@ def restarts(conn, issue_id, before_id):
     return _streak(conn, issue_id, before_id, INTERRUPTED)
 
 
+def save_docs_line(conn, run_id, line):
+    """The Docs line that passed DD's check for this run's work, so work resumed without the agent can be checked."""
+    with conn:
+        conn.execute("UPDATE runs SET docs_line = ? WHERE id = ?", (scrub(line) if line else None, run_id))
+
+
 def mark_pushed(conn, run_id):
     with conn:
         conn.execute("UPDATE runs SET pushed = 1 WHERE id = ?", (run_id,))

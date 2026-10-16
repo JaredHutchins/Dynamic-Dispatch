@@ -2,8 +2,9 @@
 
 The line takes one of two forms, "Docs: updated <files>" or "Docs: none
 needed, because <reason>". Every file it names must be changed on the branch
-and count as documentation. Changes outside the documentation and exempt
-paths need the line; a branch that changes only those paths may leave it out.
+and count as documentation. Every branch needs the line while the check is
+on: exempt paths only mean a change there needs no documentation update, so a
+reason is enough, not that the line can be left out.
 """
 
 import re
@@ -44,6 +45,12 @@ def find(summary):
     return kind, form.group(2).strip().strip("*_`:").strip()
 
 
+def last_line(summary):
+    """The summary's Docs line as written, or None when its last line isn't one."""
+    lines = [line.strip() for line in (summary or "").splitlines() if line.strip()]
+    return lines[-1] if lines and find(lines[-1]) is not None else None
+
+
 def named_files(rest):
     """The file paths an "updated" line names, split on commas and "and"."""
     rest = re.sub(r"\([^)]*\)", "", rest)
@@ -68,7 +75,8 @@ def problem(settings, summary, changed):
     line = find(summary)
     if line is None:
         if not undocumented:
-            return None
+            return ("Your summary doesn't end with a Docs line. Every pull request needs one, even when "
+                    "it changes only documentation or exempt paths.")
         return (f"Your summary doesn't end with a Docs line, but these changes may need documentation: "
                 f"{_listing(undocumented)}.")
     kind, rest = line
@@ -103,9 +111,9 @@ def instruction(settings, rework=False):
         "Name each documentation file you changed by its path from the repository root, "
         "separated by commas. In this project, documentation is "
         f"{_listing(settings['documentation'])}, and changes only to {_listing(settings['exempt'])} "
-        "never need it. Before the pull request is opened or updated, every file the line names "
-        "must be changed and count as documentation, and any other change needs either a "
-        f"documentation update or a reason. {again}\n"
+        "never need a documentation update, though the line is still required. Before the pull "
+        "request is opened or updated, every file the line names must be changed and count as "
+        f"documentation, and any other change needs either a documentation update or a reason. {again}\n"
     )
 
 
@@ -116,7 +124,7 @@ def send_back_note(settings, found, changed, summary):
         f"{found}\n\n"
         f"Files this branch changes: {_listing(changed)}\n"
         f"Documentation is {_listing(settings['documentation'])}; changes only to "
-        f"{_listing(settings['exempt'])} never need it.\n\n"
+        f"{_listing(settings['exempt'])} never need a documentation update.\n\n"
         "Update the documentation if the change needs it, or explain why none is needed. "
         "Your final message replaces your earlier summary as the pull request description, so give "
         "the complete summary again, ending with a correct Docs line. Do not run Git commands that "

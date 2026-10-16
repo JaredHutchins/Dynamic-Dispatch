@@ -5,7 +5,7 @@ from pathlib import Path
 import unittest
 from unittest import mock
 
-from dispatch import agents, config, docs_line, runs, worker
+from dispatch import agents, config, docs_line, github, gitops, runs, worker
 from helpers import Base, MainChanges, REPO_CODE, S_BLK, S_IP, S_REV, board, git, prs, temporary_directory
 
 DEFAULTS = config.docs({})
@@ -66,12 +66,20 @@ class Lines(unittest.TestCase):
             with self.subTest(summary=summary):
                 self.assertIsNotNone(docs_line.problem(DEFAULTS, summary, ["app.py"]))
 
-    def test_tests_and_documentation_only_changes_need_no_line(self):
-        self.assertIsNone(docs_line.problem(DEFAULTS, MISSING, ["tests/test_app.py", "test/data.txt"]))
-        self.assertIsNone(docs_line.problem(DEFAULTS, MISSING, ["README.md", "docs/a.md"]))
-        self.assertIsNone(docs_line.problem(DEFAULTS, MISSING, []))
+    def test_tests_and_documentation_only_changes_still_need_the_line(self):
+        # Exempt paths need no documentation update, but the line is never optional.
+        for changed in (["tests/test_app.py", "test/data.txt"], ["README.md", "docs/a.md"], []):
+            with self.subTest(changed=changed):
+                self.assertIn("doesn't end with a Docs line", docs_line.problem(DEFAULTS, MISSING, changed))
+        self.assertIsNone(docs_line.problem(DEFAULTS, REASON, ["tests/test_app.py", "test/data.txt"]))
+        self.assertIsNone(docs_line.problem(DEFAULTS, "Docs: updated docs/a.md", ["README.md", "docs/a.md"]))
         # A line that is given is still checked.
         self.assertIsNotNone(docs_line.problem(DEFAULTS, UPDATED, ["tests/test_app.py"]))
+
+    def test_last_line(self):
+        self.assertEqual(docs_line.last_line(REASON + "\n\n"), "Docs: none needed, because VALUE is internal.")
+        self.assertIsNone(docs_line.last_line(MISSING))
+        self.assertIsNone(docs_line.last_line(None))
 
     def test_check_turned_off(self):
         off = dict(DEFAULTS, check=False)
@@ -193,10 +201,18 @@ class Runs(Base, MainChanges):
         self.assertEqual((row["status"], len(prompts)), (runs.DONE, 2))
         self.assertIn("gives no reason", prompts[1])
 
-    def test_tests_only_changes_need_no_line(self):
+    def test_tests_only_changes_still_need_the_line(self):
         self.add_issue()
-        row, prompts = self.build((["tests/test_feature.py"], MISSING))
-        self.assertEqual((row["status"], len(prompts)), (runs.DONE, 1))
+        row, prompts = self.build((["tests/test_feature.py"], MISSING), ([], REASON))
+        self.assertEqual((row["status"], len(prompts)), (runs.DONE, 2), row)
+        self.assertIn("doesn't end with a Docs line", prompts[1])
+        self.assertEqual(row["docs_line"], "Docs: none needed, because VALUE is internal.")
+
+    def test_documentation_only_changes_still_need_the_line(self):
+        self.add_issue()
+        row, prompts = self.build((["docs/guide.md"], MISSING), ([], "Docs: updated docs/guide.md"))
+        self.assertEqual((row["status"], len(prompts)), (runs.DONE, 2), row)
+        self.assertIn("doesn't end with a Docs line", prompts[1])
 
     def test_check_turned_off(self):
         self.cfg["projects"]["dd"]["docs"] = {"check": False}
@@ -239,6 +255,98 @@ class Runs(Base, MainChanges):
             row, _ = self.build((["docs/new.md", "app.py"], REASON))
         self.assertEqual(row["status"], runs.DONE, row)
         self.assertEqual(check.call_args.args[2], ["app.py", "docs/new.md", "feature.py"])
+
+
+class SavedWork(Base):
+    """Work an earlier run saved reaches review without the agent, so its saved line is checked."""
+
+    def build_without_push(self):
+        self.add_issue()
+        board.get_states = [S_IP, "FAIL"]  # Plane can't be reached just before the push
+        with mock.patch.object(agents, "run", side_effect=Agent(self, (["feature.py"], REASON))):
+            self.cycle()
+        self.assertEqual(self.run_rows()[-1]["status"], runs.FAILED)
+        board.issues["i1"]["state"] = {"id": S_IP}
+
+    def build_without_pull_request(self):
+        self.add_issue()
+        with mock.patch.object(agents, "run", side_effect=Agent(self, (["feature.py"], REASON))), \
+                mock.patch.object(github, "open_pr", side_effect=github.GitHubError("GitHub is down")):
+            self.cycle()
+        self.assertEqual(self.run_rows()[-1]["status"], runs.FAILED)
+        board.issues["i1"]["state"] = {"id": S_IP}
+
+    def forget_line(self):
+        """Make the earlier run look like one from before the check existed."""
+        with self.conn:
+            self.conn.execute("UPDATE runs SET docs_line = NULL")
+
+    def resume(self, *answers):
+        agent = Agent(self, *answers)
+        with mock.patch.object(agents, "run", side_effect=agent):
+            self.cycle()
+        return self.run_rows()[-1], agent.prompts
+
+    def test_saved_line_lets_resumed_work_through_without_the_agent(self):
+        self.build_without_push()
+        row, prompts = self.resume(([], "unused"))
+        self.assertEqual((row["status"], prompts), (runs.DONE, []), row)
+        self.assertIn(f"{worker.RESUMED_SUMMARY}\n\n{REASON.splitlines()[-1]}", prs["dd-7"]["body"])
+        self.assertEqual(row["docs_line"], REASON.splitlines()[-1])
+
+    def test_unchecked_resumed_work_cannot_bypass_the_check(self):
+        self.build_without_push()
+        self.forget_line()
+        pushes = []
+        real_push = gitops.push
+        def push(*args):
+            pushes.append(1)
+            return real_push(*args)
+        with mock.patch.object(gitops, "push", side_effect=push):
+            row, prompts = self.resume(([], MISSING), (["README.md"], UPDATED))
+        self.assertEqual(row["status"], runs.DONE, row)
+        # Handed to the agent, then sent back like any other run, before anything was pushed.
+        self.assertEqual(len(prompts), 2)
+        self.assertIn(worker.UNCHECKED_WORK_NOTE, prompts[0])
+        self.assertIn("doesn't end with a Docs line", prompts[1])
+        self.assertEqual(len(pushes), 1)
+        self.assertTrue(prs["dd-7"]["body"].startswith(UPDATED))
+        self.assertIn("README.md", git("show", "--name-only", "--format=", "dd-7", cwd=self.origin))
+        self.assertTrue(any("saved work's Docs line" in e["detail"] for e in runs.events(self.conn)))
+
+    def test_unchecked_resumed_work_still_wrong_is_never_pushed(self):
+        self.build_without_push()
+        self.forget_line()
+        row, prompts = self.resume(([], MISSING))
+        self.assertEqual(row["status"], runs.FAILED)
+        self.assertEqual(len(prompts), 1 + worker.DOCS_TRIES)
+        self.assertNotIn("dd-7", git("branch", "--list", cwd=self.origin))
+        self.assertEqual(prs, {})
+
+    def test_unchecked_pull_request_retry_cannot_bypass_the_check(self):
+        self.build_without_pull_request()
+        self.forget_line()
+        row, prompts = self.resume(([], MISSING))
+        self.assertEqual(row["status"], runs.FAILED, row)
+        self.assertIn(worker.UNCHECKED_WORK_NOTE, prompts[0])
+        self.assertEqual(prs, {})
+        board.issues["i1"]["state"] = {"id": S_IP}
+        row, prompts = self.resume(([], REASON))
+        self.assertEqual((row["status"], len(prompts)), (runs.DONE, 1), row)
+        self.assertTrue(prs["dd-7"]["body"].startswith(REASON))
+
+    def test_saved_line_lets_a_pull_request_retry_through(self):
+        self.build_without_pull_request()
+        row, prompts = self.resume(([], "unused"))
+        self.assertEqual((row["status"], prompts), (runs.DONE, []), row)
+        self.assertIn(REASON.splitlines()[-1], prs["dd-7"]["body"])
+
+    def test_check_turned_off_needs_no_saved_line(self):
+        self.build_without_push()
+        self.forget_line()
+        self.cfg["projects"]["dd"]["docs"] = {"check": False}
+        row, prompts = self.resume(([], "unused"))
+        self.assertEqual((row["status"], prompts), (runs.DONE, []), row)
 
 
 if __name__ == "__main__":

@@ -298,11 +298,13 @@ description, with one of these lines:
 
 Before the pull request is opened or updated, DD compares the line with the
 files the branch changes. Each file named as updated must be changed and count
-as documentation, and a reason can't be blank. A branch that changes anything
-outside the documentation and exempt paths needs the line; one that only
-changes tests or documentation may leave it out. A missing or wrong line goes
-back to the agent, with a comment on the story, like failing tests: two tries,
-then Blocked with nothing pushed. Every rework round needs its own line. DD's
+as documentation, and a reason can't be blank. Every pull request needs the
+line, even one that only changes tests or documentation; exempt paths only mean
+a reason is enough. A missing or wrong line goes back to the agent, with a
+comment on the story, like failing tests: two tries, then Blocked with nothing
+pushed. Work an earlier run saved but never got to review is pushed with the
+line DD saved for it; if there is none, as for work saved before this check,
+the agent checks the finished work and writes one first. Every rework round needs its own line. DD's
 own "combine with main" commits never count, and Fix main stories follow the
 same rule.
 

@@ -54,6 +54,12 @@ FINISHED_WORK_NOTE = (
     "Change only what is needed. If it already meets everything, say so and change nothing."
 )
 
+UNCHECKED_WORK_NOTE = (
+    "\n\nThe work on this branch was finished and tested in an earlier run, but no Docs line that fits "
+    "the branch's changes was saved with it, so it hasn't been uploaded. Check that the documentation "
+    "is up to date with this work and update it only where needed. Your final message becomes the pull "
+    "request description, so summarise all of the branch's work, ending with the Docs line."
+)
 
 UNFINISHED_LIMIT = 50 * 1024  # bytes of unfinished changes shown to the agent
 DOCS_TRIES = 2  # times an agent is sent back to fix its Docs line
@@ -126,6 +132,8 @@ class RunContext:
         self.resuming = False
         self.pulled_out = False
         self.retrying_pr = False
+        self.earlier = None  # the run whose saved work this one resumes or retries
+        self.unchecked = False  # saved work handed back to the agent for its Docs line
         self.changed = False
         self.result = None
         self.combined_note = ""
@@ -336,6 +344,7 @@ def _prepare(ctx, group, existing, saved):
         log(f"{story_ref(ctx.project_cfg, ctx.run)}: branch was pushed without a pull request; "
             "opening it instead of running the agent")
         ctx.result = {"summary": summary}
+        ctx.earlier = pushed
         try:
             ctx.changed = gitops.has_changes(ctx.repo, ctx.worktree)
             ahead = gitops.has_commits_beyond_base(ctx.repo, ctx.run["branch"], ctx.base)
@@ -360,6 +369,7 @@ def _prepare(ctx, group, existing, saved):
         ctx.event("resumed", summary)
         log(f"{story_ref(ctx.project_cfg, ctx.run)}: branch has unpushed work; pushing it instead of running the agent")
         ctx.result = {"summary": summary}
+        ctx.earlier = previous
         try:
             ctx.changed = gitops.has_changes(ctx.repo, ctx.worktree)
         except gitops.GitError as e:
@@ -388,6 +398,8 @@ def _build(ctx, title, issue, rework_pr, saved, group):
 
     Return True to carry on, or None when the run stops here.
     """
+    if not ctx.needs_build and not _check_saved_docs(ctx):
+        return
     if ctx.needs_build:
         # Changes an earlier run left uncommitted are handed on rather than redone.
         restored = saved is not None
@@ -404,7 +416,7 @@ def _build(ctx, title, issue, rework_pr, saved, group):
         prompt = (prompts.build_prompt(ctx.project_cfg, issue) + rework.prompt(rework_pr)
                   + docs_line.instruction(config.docs(ctx.project_cfg), rework=bool(rework_pr)))
         if ctx.pulled_out:
-            prompt += FINISHED_WORK_NOTE
+            prompt += UNCHECKED_WORK_NOTE if ctx.unchecked else FINISHED_WORK_NOTE
         if unfinished:
             maker = maker or _earlier_agent(ctx.cfg, ctx.conn, ctx.run)
             count = len(unfinished["files"])
@@ -482,6 +494,7 @@ def _check_docs(ctx, issue, rework_pr):
             return ctx.fail(f"Could not list the branch's changes to check the Docs line:\n\n{e}")
         found = docs_line.problem(settings, ctx.result.get("summary"), changed)
         if found is None:
+            runs.save_docs_line(ctx.conn, ctx.run["id"], docs_line.last_line(ctx.result.get("summary")))
             return True
         ctx.event("docs_line_wrong", found)
         if attempt >= DOCS_TRIES:
@@ -521,6 +534,39 @@ def _check_docs(ctx, issue, rework_pr):
             return
         if outcome:
             return ctx.fail(outcome)
+
+
+def _check_saved_docs(ctx):
+    """Check the Docs line of work an earlier run saved, which reaches review without the agent.
+
+    Held work keeps its agent's summary; resumed work and pull request retries
+    have the line saved when the earlier run's check passed. Work saved without
+    one, as before the check existed, or whose line no longer fits, can't be
+    sent back to an agent that isn't running, so it is handed to this run's
+    agent as finished work instead, and that agent's line is checked as usual.
+    Nothing is pushed or opened before then. Return True to carry on, or None
+    when the run stops here.
+    """
+    settings = config.docs(ctx.project_cfg)
+    if ctx.run["hold_data"]:
+        line = docs_line.last_line(ctx.result.get("summary"))
+    else:
+        line = ctx.earlier["docs_line"] if ctx.earlier is not None else None
+    try:
+        changed = gitops.branch_changed_files(ctx.repo, ctx.worktree, ctx.base)
+    except gitops.GitError as e:
+        return ctx.fail(f"Could not list the branch's changes to check the Docs line:\n\n{e}")
+    found = docs_line.problem(settings, line, changed)
+    if found is None:
+        runs.save_docs_line(ctx.conn, ctx.run["id"], line)
+        if line and docs_line.last_line(ctx.result.get("summary")) is None:
+            ctx.result["summary"] = f"{ctx.result.get('summary') or ''}\n\n{line}".strip()
+        return True
+    ctx.event("docs_line_wrong", f"The saved work's Docs line isn't right: {found} Handed to "
+                                 f"{ctx.agent_cfg['display_name']} as finished work to check.")
+    ctx.needs_build = ctx.pulled_out = ctx.unchecked = True
+    ctx.retrying_pr = False  # the agent's work is pushed with the pull request
+    return True
 
 
 def execute(cfg, conn, run):

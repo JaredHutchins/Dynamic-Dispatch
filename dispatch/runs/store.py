@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS runs (
     handed_from     TEXT,
     revision        TEXT,
     hold_data       TEXT,
+    docs_line       TEXT,
     hold_announced  INTEGER NOT NULL DEFAULT 0,
     queued_at       TEXT NOT NULL,
     claimed_at      TEXT,
@@ -327,7 +328,7 @@ def connect(db_path, *, initialize=True):
         if "kind" not in columns:
             with conn:
                 conn.execute("ALTER TABLE runs ADD COLUMN kind TEXT NOT NULL DEFAULT 'story'")
-        for column in ("handed_from", "revision", "hold_data", "decision_at"):
+        for column in ("handed_from", "revision", "hold_data", "decision_at", "docs_line"):
             if column not in columns:
                 with conn:
                     conn.execute(f"ALTER TABLE runs ADD COLUMN {column} TEXT")
