@@ -52,8 +52,13 @@ review.
     `DEFINITION_OF_DONE.md`, `REVIEW_RUBRIC.md`, `STORY_TEMPLATE.md` and
     `deploy/*.md`; changes only to `tests/` need no documentation
     update, but still need the line.
-11. **Decisions are written down.** If the change alters a design decision,
-    `ARCHITECTURE.md` is updated in the same pull request.
+11. **Decisions and visible changes are written down.** If the change alters
+    a design decision, `ARCHITECTURE.md` is updated in the same pull request.
+    Any change people would notice (new or changed behaviour, commands,
+    settings, setup steps, requirements or alerts) updates `README.md` and
+    the relevant guide under `deploy/` (`deploy/README.md`,
+    `deploy/PLANE_CLOUD.md` or any other guide there) in the same pull
+    request. A change that needs no doc update says so in its summary.
 
 ## Design rules
 
