@@ -269,12 +269,14 @@ class Delivery(Base):
         device = settings()['device_keys'][0]
         endpoint = settings()['bark_url'] + '/' + device
         for error in (urllib.error.URLError(endpoint), TimeoutError(endpoint),
-                      urllib.error.HTTPError(endpoint, 503, device, {}, None)):
+                      helpers.http_error(self, endpoint, 503, device, {}, None)):
             with self.subTest(error=type(error).__name__), \
                     mock.patch.object(alerts.urllib.request, 'urlopen', side_effect=error), \
                     mock.patch.object(alerts, 'warn') as warning:
                 alerts.send(self.cfg, 'dd', 'i1', 'Update')
                 self.sender.queue.join()
+                if isinstance(error, urllib.error.HTTPError):
+                    self.assertTrue(error.closed)
                 self.assertEqual(warning.call_count, 2)
                 for call in warning.call_args_list:
                     self.assertIn(type(error).__name__, call.args[0])

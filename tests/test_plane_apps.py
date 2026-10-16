@@ -7,7 +7,6 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest import mock
-from urllib.error import HTTPError
 from urllib.parse import parse_qs
 
 import helpers
@@ -45,7 +44,7 @@ class AppCase(unittest.TestCase):
         body = io.BytesIO(json.dumps(sample['body']).encode())
         self.addCleanup(body.close)
         if sample['status'] >= 400:
-            return HTTPError('https://api.plane.so', sample['status'], 'error', {}, body)
+            return helpers.http_error(self, 'https://api.plane.so', sample['status'], 'error', {}, body)
         return body
 
     def requests(self):
@@ -122,7 +121,7 @@ class Tokens(AppCase):
 
     def test_forbidden_is_not_renewed(self):
         self.urlopen.side_effect = [self.response('app_token'),
-                                    HTTPError('https://api.plane.so', 403, 'error', {}, io.BytesIO(b'{}'))]
+                                    helpers.http_error(self, 'https://api.plane.so', 403, 'error', {}, io.BytesIO(b'{}'))]
         with self.assertRaises(plane.PlaneError) as error:
             self.client.get('/projects/')
         self.assertEqual((error.exception.status, self.urlopen.call_count), (403, 2))
@@ -171,7 +170,7 @@ class RejectedLogin(AppCase):
             with self.subTest(name=name):
                 self.send.reset_mock()
                 body = json.dumps({'error': 'invalid_client', 'echo': SECRET}).encode()
-                self.urlopen.side_effect = [HTTPError('https://api.plane.so', 401, 'error', {}, io.BytesIO(body))]
+                self.urlopen.side_effect = [helpers.http_error(self, 'https://api.plane.so', 401, 'error', {}, io.BytesIO(body))]
                 stderr = io.StringIO()
                 with contextlib.redirect_stderr(stderr), contextlib.redirect_stdout(stderr):
                     with self.assertRaises(plane.PlaneError) as error:
