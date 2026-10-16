@@ -6,6 +6,10 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
+      args:
+        # The agents to include, for example DD_AGENTS="claude codex gemini" on the
+        # host when building. Rebuild with --build after changing it.
+        DD_AGENTS: ${DD_AGENTS:-gemini}
     restart: unless-stopped
     # Reaps agent processes that outlive their parent, as systemd does on the Pi.
     init: true
@@ -19,6 +23,10 @@ services:
       - dd-repositories:/srv/dynamic-dispatch/repos
       - dd-stories:/srv/dynamic-dispatch/worktrees
       - dd-agent-env:/etc/dynamic-dispatch
+      # Each agent's home, holding its own login where it keeps one there. An agent
+      # the image doesn't include leaves its volume empty and unused.
+      - dd-claude-home:/home/dd-agent
+      - dd-codex-home:/home/dd-codex
       - dd-gemini-home:/home/dd-gemini
       # Optional Gemini credential, read only. The start step gives Gemini's
       # account the only readable copy. Keep the file outside the repository,
@@ -33,4 +41,6 @@ volumes:
   dd-repositories:
   dd-stories:
   dd-agent-env:
+  dd-claude-home:
+  dd-codex-home:
   dd-gemini-home:
