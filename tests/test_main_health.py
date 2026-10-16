@@ -709,6 +709,41 @@ class MainCheck(MainChanges, Base):
         self.cycle()
         self.assertEqual(self.stories("waiting")[-1]["status"], runs.DONE)
 
+    def test_held_work_without_a_docs_line_goes_back_to_the_agent(self):
+        self.cycle()
+        self.add_issue()
+        dd_main.poll_once(self.cfg, self.conn)
+        original = worker.agents.run
+
+        def turn_red(*args, **kwargs):
+            result = original(*args, **kwargs)
+            conn = runs.connect(self.cfg["db_path"], initialize=False)
+            try:
+                runs.save_main_health(conn, "dd", revision=self.head(), state="red", since=runs.now(),
+                                      failing=[], broken_by=None, alert_owed=False)
+            finally:
+                conn.close()
+            return result
+
+        with mock.patch.object(worker.agents, "run", side_effect=turn_red):
+            dd_main.drain(self.cfg, self.conn)
+        [held] = self.stories("i1")
+        self.assertEqual(held["status"], runs.HELD)
+        # As if held before the check existed: the saved summary has no Docs line.
+        with self.conn:
+            self.conn.execute("UPDATE runs SET hold_data = ? WHERE id = ?",
+                              (json.dumps({"ok": True, "summary": "Added a value."}), held["id"]))
+        self.advance_main()
+        self.outcomes("pass")
+        self.cycle()
+        with mock.patch.object(worker.agents, "run", wraps=original) as agent:
+            self.cycle()
+            self.assertEqual(agent.call_count, 1)
+            self.assertIn(worker.UNCHECKED_WORK_NOTE, agent.call_args.args[2])
+        done = runs.get(self.conn, held["id"])
+        self.assertEqual(done["status"], runs.DONE)
+        self.assertTrue(done["summary"].splitlines()[-1].startswith("Docs: none needed"))
+
     def test_hold_save_and_comment_errors_warn_and_retry_without_blocking(self):
         self.cycle()
         self.add_issue()

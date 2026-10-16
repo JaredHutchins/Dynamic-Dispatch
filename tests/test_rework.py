@@ -65,6 +65,7 @@ class Decisions(Base):
             self.prompt = prompt
             if changed:
                 (Path(worktree) / "another.py").write_text("VALUE = 42\n")
+                return {"ok": True, "summary": summary + "\n\nDocs: none needed, because another.py is internal."}
             return {"ok": True, "summary": summary}
         return mock.patch.object(agents, "run", side_effect=agent)
 

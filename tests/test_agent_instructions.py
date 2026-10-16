@@ -18,6 +18,7 @@ class AgentInstructions(unittest.TestCase):
         functions = {
             'prompts.py': {'build_prompt', 'assessment_prompt'},
             'rework.py': {'prompt'},
+            'docs_line.py': {'instruction', 'send_back_note'},
             'worker.py': {'unfinished_note'},
             'mainhealth.py': {'_failure_notes'},
         }
