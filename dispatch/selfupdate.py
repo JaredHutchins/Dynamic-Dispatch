@@ -8,8 +8,9 @@ exactly main's latest commit. Alternatively, self_update_public_repo gates
 updates on GitHub checks without needing a DD project or GitHub login.
 
 What the update changes decides what happens:
-  - deploy files DEPLOY_FILES lists as installed: DD sends one alert with the
-    steps to run deploy/dd-install and waits to be updated by hand. In a
+  - deploy files that deploy/FILES.md, read from the commit being updated to,
+    lists as installed or doesn't list (unless Markdown): DD sends one alert with
+    the steps to run deploy/dd-install and waits to be updated by hand. In a
     container they restart DD instead, like code, since the container's start
     step re-runs the installer before DD starts;
   - dispatch/ or main.py: no new run starts while runs already going finish.
@@ -42,26 +43,11 @@ STORY_ID = "self-update"  # self-update events are kept under this, apart from a
 TITLE_LIMIT = 200
 
 CODE_FOLDER, CODE_FILE, DEPLOY = "dispatch/", "main.py", "deploy/"
-# The one list of how each deploy file reaches the machine: "installed" files are
-# copied out of the checkout, so a change to one waits for deploy/dd-install (in a
-# container, for the restart whose start step runs it); "checkout" files run from
-# the checkout, "documentation" is only read, and "image" files only take effect
-# when someone rebuilds the container image, so those update normally. A test
-# fails if a file in deploy/ is missing here.
-DEPLOY_FILES = {
-    "deploy/Dockerfile": "image",
-    "deploy/compose.yaml": "image",
-    "deploy/dd-container-start": "image",
-    "deploy/dd-agent-run": "installed",
-    "deploy/dd-rollback": "installed",
-    "deploy/sudoers-dynamic-dispatch": "installed",
-    "deploy/dynamic-dispatch.service": "installed",
-    "deploy/dynamic-dispatch-rollback.service": "installed",
-    "deploy/dd-install": "checkout",
-    "deploy/README.md": "documentation",
-    "deploy/PLANE_CLOUD.md": "documentation",
-    "deploy/CONTAINER.md": "documentation",
-}
+# deploy/FILES.md is the one list of how each deploy file reaches the machine. It is
+# read from the commit being updated to, since a merge adding a deploy file lists it
+# there, and the running copy's own list would be too old to know it.
+FILES_PAGE = "deploy/FILES.md"
+CATEGORIES = ("installed", "checkout", "image", "documentation")
 INSTALLER_AGENTS = {"dd-agent": "claude", "dd-codex": "codex", "dd-gemini": "gemini"}
 # deploy/CONTAINER.md's rebuild, with the dc helper that guide defines.
 REBUILD = "dc up -d --build"
@@ -135,10 +121,11 @@ def _checked_update(cfg, conn, project, checkout, target, base, *, public=False)
     update = {"project": project, "checkout": checkout, "base": base, "head": head, "target": target,
               "title": f"commit {target[:12]}" if public else _title(cfg, conn, project, checkout, target, head),
               "rollback": recovery.get("rolled_back")}
-    deploy = sorted({name for name in state["files"] if _installed(name)})
+    kinds, why = _categories(checkout, target, state["files"])
+    deploy = sorted(name for name, kind in kinds.items() if kind == "installed")
     in_container = container.in_container()
     if deploy and not in_container:
-        _refuse(cfg, conn, update, "deploy", _install_steps(cfg, checkout, deploy))
+        _refuse(cfg, conn, update, "deploy", _install_steps(cfg, checkout, deploy, why))
         return None
     if state["dirty"]:
         reason, problem = "local changes", (f"its checkout at {checkout} has local changes. "
@@ -154,7 +141,7 @@ def _checked_update(cfg, conn, project, checkout, target, base, *, public=False)
     if reason:
         _refuse(cfg, conn, update, reason, problem)
         return None
-    image = sorted(name for name in state["files"] if DEPLOY_FILES.get(name) == "image")
+    image = sorted(name for name, kind in kinds.items() if kind == "image")
     if image and in_container:
         _rebuild(cfg, conn, update, image)
     # Installed files only get this far in a container, whose start step installs them on the restart.
@@ -314,24 +301,52 @@ def _named_merges(cfg, conn, project, titles, numbers):
     return named
 
 
-def _installed(name):
-    """Whether a changed file is installed. One this copy of DD doesn't know yet (a deploy file
-    added by the very merge being checked) counts as installed unless it's Markdown, to be safe."""
-    if not name.startswith(DEPLOY):
-        return False
-    return DEPLOY_FILES.get(name, "documentation" if name.endswith(".md") else "installed") == "installed"
+def deploy_files(text):
+    """Each file deploy/FILES.md's table lists, with its category. A row naming no known category
+    is left out, so its file counts as unlisted."""
+    files = {}
+    for line in text.splitlines():
+        cells = [cell.strip().strip("`") for cell in line.strip().strip("|").split("|")]
+        if len(cells) == 2 and cells[0].startswith(DEPLOY) and cells[1] in CATEGORIES:
+            files[cells[0]] = cells[1]
+    return files
 
 
-def _install_steps(cfg, checkout, files):
-    """The steps to install changed deploy files with deploy/dd-install, kept short enough to fit an alert."""
+def _categories(checkout, target, files):
+    """Each changed deploy file's category, from deploy/FILES.md at target, and why any of them
+    count as installed without being listed so. Unlisted files count as installed unless they're
+    Markdown, to be safe, and so does every changed deploy file when the list can't be read."""
+    changed = [name for name in files if name.startswith(DEPLOY)]
+    if not changed:
+        return {}, ""
+    text = gitops.read_commit_file(checkout, target, FILES_PAGE)
+    listed = deploy_files(text) if text is not None else {}
+    kinds = {name: listed.get(name, "documentation" if name.endswith(".md") else "installed")
+             for name in changed}
+    unlisted = sorted(name for name in changed if name not in listed and kinds[name] == "installed")
+    if not unlisted:
+        return kinds, ""
+    if not listed:
+        return kinds, (f"DD couldn't read {FILES_PAGE} at that commit, so it treats every changed "
+                       "deploy file but Markdown as installed.")
+    return kinds, (f"{FILES_PAGE} at that commit doesn't list {', '.join(unlisted)}, so DD treats "
+                   f"{'it' if len(unlisted) == 1 else 'them'} as installed.")
+
+
+def _install_steps(cfg, checkout, files, why=""):
+    """The steps to install changed deploy files with deploy/dd-install, kept short enough to fit an alert.
+
+    why, saying why files count as installed without being listed so, comes last: if an alert
+    must be cut, it loses that rather than the steps, and the event log keeps it whole."""
     problem = f"it changes {', '.join(files)}, which must be installed. "
+    why = f"\n\n{why}" if why else ""
     accounts = {config.run_as(cfg, name) for name in cfg["agents"]}
     unknown = sorted(accounts - INSTALLER_AGENTS.keys())
     if unknown or not accounts:
         named = ", ".join(unknown)
         named = f" ({named[:39] + '…' if len(named) > 40 else named})" if named else ""
         return (problem + f"deploy/dd-install doesn't know every agent account{named}, so follow "
-                "\"When a deploy file changes\" in deploy/README.md by hand, then restart DD.")
+                "\"When a deploy file changes\" in deploy/README.md by hand, then restart DD." + why)
     agents = " ".join(name for account, name in INSTALLER_AGENTS.items() if account in accounts)
     # A very long checkout path could push the steps past the alert size limit.
     pull = f"cd {shlex.quote(str(checkout))} && git pull"
@@ -340,7 +355,7 @@ def _install_steps(cfg, checkout, files):
     return (problem + "Update it by hand:\n\n"
             f"1. {pull}\n"
             f"2. sudo python3 deploy/dd-install --agents {agents}\n"
-            "3. sudo systemctl restart dynamic-dispatch")
+            "3. sudo systemctl restart dynamic-dispatch" + why)
 
 
 def _event(conn, project, kind, detail):

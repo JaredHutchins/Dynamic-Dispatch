@@ -139,7 +139,10 @@ Sprint-pull is off unless you turn it on for a project.
   story to fix main first.
 - **Self-update with rollback.** DD can update itself after a change to its
   own code is merged and main passes. If the new version won't run, it rolls
-  back to the last version that did and tells you.
+  back to the last version that did and tells you. Whether a changed deploy
+  file needs you to run the installer comes from
+  [deploy/FILES.md](deploy/FILES.md) in the version being updated to, so a
+  merge that adds a listed deploy file doesn't wait for you.
 - **Phone alerts (optional).** Alerts through your own Bark server when a pull
   request is ready for review, a story is blocked, or a login is rejected. DD
   encrypts each alert before sending it, so neither the Bark server nor
@@ -156,4 +159,6 @@ Sprint-pull is off unless you turn it on for a project.
   security model.
 - [deploy/README.md](deploy/README.md): setting DD up and running it as a
   service.
+- [deploy/FILES.md](deploy/FILES.md): every deploy file and how it reaches
+  the machine.
 - [LICENSE](LICENSE): the licence DD is released under.
