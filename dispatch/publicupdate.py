@@ -3,6 +3,7 @@
 import json
 import re
 import time
+import urllib.error
 import urllib.request
 
 from . import runs
@@ -17,8 +18,12 @@ def _read(repo, path):
         f"https://api.github.com/repos/{repo}/{path}",
         headers={"Accept": "application/vnd.github+json", "User-Agent": "DD-self-update",
                  "X-GitHub-Api-Version": "2022-11-28"})
-    with urllib.request.urlopen(request, timeout=15) as response:
-        return json.load(response)
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as error:
+        error.close()
+        raise
 
 
 def target(repo, conn):

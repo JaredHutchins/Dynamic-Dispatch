@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 import unittest
 from unittest import mock
-from urllib.error import HTTPError
 
 import helpers
 from dispatch import plane
@@ -26,8 +25,8 @@ class PlaneCloud(unittest.TestCase):
         body = io.BytesIO(json.dumps(sample['body']).encode())
         self.addCleanup(body.close)
         if sample['status'] >= 400:
-            return HTTPError('https://api.plane.so', sample['status'], 'error',
-                             sample.get('headers', {}) if headers is None else headers, body)
+            return helpers.http_error(self, 'https://api.plane.so', sample['status'], 'error',
+                                      sample.get('headers', {}) if headers is None else headers, body)
         return body
 
     def test_user_agent_for_every_method_and_identity(self):
@@ -85,7 +84,7 @@ class PlaneCloud(unittest.TestCase):
     def test_other_member_failures_do_not_fallback(self):
         for status in (400, 401, 403, 404, 500):
             self.urlopen.reset_mock()
-            self.urlopen.side_effect = HTTPError('https://api.plane.so', status, 'error', {}, io.BytesIO(b'other'))
+            self.urlopen.side_effect = helpers.http_error(self, 'https://api.plane.so', status, 'error', {}, io.BytesIO(b'other'))
             with self.assertRaises(plane.PlaneError) as error:
                 self.client.add_member('project', 'user')
             self.assertEqual(error.exception.status, status)
