@@ -1136,9 +1136,9 @@ recreated. `down` keeps the volumes; `down -v` deletes them. Logs:
 
 Changes to `deploy/Dockerfile`, `deploy/compose.yaml` or
 `deploy/dd-container-start` don't hold back DD's own update, and take effect
-only when you rebuild with the `up -d --build` command above. Changes to
-installed files are still held back as described in "Updating itself after a
-merge" above.
+only when you rebuild with the `up -d --build` command above; DD sends one
+alert per update saying so. Changes to installed files aren't held back in a
+container either: DD restarts as for a code update, and step 3 installs them.
 
 ### A Gemini credential file
 

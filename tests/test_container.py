@@ -279,6 +279,62 @@ class RealRollback(Base):
         self.assertIn(f'DD rolled back to {good[:12]}', output.getvalue())
 
 
+    @mock.patch.dict(os.environ, {'DD_CONTAINER': '1', 'DD_AGENTS': 'gemini'})
+    def test_an_update_whose_installer_fails_returns_to_last_good(self):
+        """An installed-file update restarts the container; its installer failing rolls it back."""
+        checkout = self.tmp / 'container-checkout'
+        git('clone', str(self.origin), str(checkout), cwd=self.tmp)
+        good = git('rev-parse', 'HEAD', cwd=checkout).strip()
+        (checkout / 'deploy').mkdir(exist_ok=True)
+        (checkout / 'deploy' / 'dd-agent-run').write_text('launcher the installer rejects\n')
+        git('add', 'deploy', cwd=checkout)
+        git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+            'commit', '-qm', 'Broken launcher', cwd=checkout)
+        update = git('rev-parse', 'HEAD', cwd=checkout).strip()
+        # As DD leaves it when it exits for the update's restart.
+        runs.save_rollback_state(checkout, {'last_good': good, 'planned_restart': start.time.time()})
+        patch(self, 'CHECKOUT', checkout)
+        patch(self, 'PYTHON', sys.executable)
+        patch(self, 'ROLLBACK', str(ROOT / 'deploy' / 'dd-rollback'))
+        installed = []
+        real_run = start.subprocess.run
+
+        def as_dd(*args):
+            return {'decision': start.decision, 'failure': start.record_failure}[args[-1]]()
+
+        def run(args, **kwargs):
+            if args != start.INSTALL + ['gemini']:
+                return real_run(args, **kwargs)
+            installed.append(git('rev-parse', 'HEAD', cwd=checkout).strip())
+            return mock.Mock(returncode=1 if installed[-1] == update else 0)
+
+        def start_container():
+            with mock.patch.object(start, 'as_dd', side_effect=as_dd), \
+                    mock.patch.object(start.subprocess, 'run', side_effect=run), \
+                    mock.patch.object(start.pwd, 'getpwnam', return_value=ACCOUNT), \
+                    mock.patch.object(start, 'own'), \
+                    mock.patch.object(start, 'hand_over_credential'), \
+                    mock.patch.object(start, 'drop_to_dd', side_effect=lambda account: installed.append('DD')), \
+                    mock.patch('sys.stdout', new_callable=io.StringIO) as output:
+                try:
+                    start.bootstrap()
+                except RuntimeError as error:
+                    self.assertEqual(str(error), 'deploy/dd-install failed')
+            return output.getvalue()
+
+        # A planned update restart does not delay recovery at the failure limit.
+        for _ in range(start.FAILURES):
+            start_container()
+        self.assertEqual(installed, [update] * start.FAILURES)
+        self.assertEqual(git('rev-parse', 'HEAD', cwd=checkout).strip(), update)
+        output = start_container()
+        self.assertIn(f'DD failed to start {start.FAILURES} times within 5 minutes', output)
+        self.assertIn(f'DD rolled back to {good[:12]} because {update[:12]} kept failing to start', output)
+        # The installer runs again from the rolled-back checkout, installs, and DD starts.
+        self.assertEqual(installed, [update] * start.FAILURES + [good, 'DD'])
+        self.assertEqual(git('rev-parse', 'HEAD', cwd=checkout).strip(), good)
+        self.assertEqual(runs.rollback_state(checkout)['failed'], update)
+
 class Supervise(Folders):
     def test_counts_crashes_but_not_updates_or_clean_exits(self):
         for code in (1, start.UPDATE_EXIT, 0):

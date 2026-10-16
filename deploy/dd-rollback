@@ -62,7 +62,8 @@ def recover(checkout):
         if state.get('down'):
             return {'restart': False, 'message': None}
         planned = state.get('planned_restart')
-        if isinstance(planned, (int, float)) and 0 <= time.time() - planned <= 300:
+        if (os.environ.get('DD_CONTAINER') != '1' and isinstance(planned, (int, float))
+                and 0 <= time.time() - planned <= 300):
             return {'restart': True, 'message': None,
                     'log': 'Start limit hit after a planned restart within five minutes; '
                            'clearing the start limit and restarting DD without rollback'}
