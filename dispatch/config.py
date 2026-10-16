@@ -185,10 +185,24 @@ def load(path=None, *, allow_empty_projects=False):
                     f"project '{name}' lists agent '{agent_name}', which is not defined in agents"
                 )
 
+    _check_prepare(cfg)
     _check_cycles(cfg)
     _check_docs(cfg)
     cooldown_minutes(cfg)
     return cfg
+
+
+def _check_prepare(cfg):
+    for name, project in cfg["projects"].items():
+        commands = project.get("prepare_commands", [])
+        if not isinstance(commands, list) or any(
+                not isinstance(command, list) or not command or
+                any(not isinstance(arg, str) or "\0" in arg for arg in command) or
+                not command[0].strip() for command in commands):
+            raise ConfigError(f"project '{name}' prepare_commands must be a list of non-empty argument lists")
+        timeout = project.get("prepare_timeout_seconds", 900)
+        if type(timeout) is not int or timeout < 1:
+            raise ConfigError(f"project '{name}' prepare_timeout_seconds must be a positive whole number")
 
 
 def _check_plane(p):

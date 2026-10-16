@@ -157,6 +157,7 @@ def run(path=None, *, project=None):
 
     _check_plane(cfg, check, require)
     _check_github(cfg, check, report, require)
+    _check_prepare(cfg, check, require)
     _check_git(cfg, check, report)
     accounts = _check_agents(cfg, check, report, require)
     doctor_sandbox.check(cfg, accounts, CHECKOUT, path or config.DEFAULT_CONFIG_PATH, report)
@@ -438,3 +439,15 @@ def _check_installed(cfg, accounts, check, require):
               'sudoers-dynamic-dispatch as deploy/README.md "When a deploy file changes" describes.',
               skip='the Launcher check failed' if launched is None else
                    "this agent's account check failed" if accounts[name] is None else None)
+
+
+def _check_prepare(cfg, check, require):
+    for index, project in enumerate(cfg['projects'].values(), 1):
+        for number, command in enumerate(project.get('prepare_commands', []), 1):
+            program = command[0]
+            if '/' in program and not Path(program).is_absolute():
+                program = str(Path(project['repo_path']) / program)
+            check(f'Project {index} prepare command {number}',
+                  lambda: require(shutil.which(program, path=AGENT_PATH)),
+                  "Prepare program is available on the launcher's PATH or at its configured path.",
+                  "Prepare program is missing; install it on the sandbox PATH or check its configured path.")

@@ -83,11 +83,12 @@ class SetupTests(unittest.TestCase):
         for name, value in patches.items():
             self.mocks[name] = self.enterContext(patch('dispatch.add_project.' + name, value))
 
-    def run_setup(self, reuse=False, cycles=True, docs=('', '', '')):
+    def run_setup(self, reuse=False, cycles=True, docs=('', '', ''), prepare=()):
         output = io.StringIO()
         answers = ['Example', 'example/project', 'python3 -m unittest', 'y' if cycles else 'n', *docs]
         if reuse:
             answers.append('y')
+        answers.extend(prepare)
         with patch('builtins.input', side_effect=answers) as ask, contextlib.redirect_stdout(output):
             result = add_project.run(self.path)
         self.asked = '\n'.join(c.args[0] for c in ask.call_args_list)
@@ -95,6 +96,15 @@ class SetupTests(unittest.TestCase):
         for secret in ('fake-secret-plane', 'fake-secret-github', 'fake-secret-agent', 'fake-installation-secret'):
             self.assertNotIn(secret, text)
         return result, text
+
+    def test_prepare_suggestions_are_confirmed_edited_or_skipped_and_saved(self):
+        with patch.object(add_project, 'suggest_prepare', return_value=[
+                ['npm', 'ci'], ['go', 'mod', 'download'], ['cargo', 'fetch']]) as suggest:
+            result, output = self.run_setup(prepare=('', 'custom "two words"', 'skip'))
+        self.assertEqual(result, 0, output)
+        project = json.loads(self.path.read_text())['projects']['Example']
+        self.assertEqual(project['prepare_commands'], [['npm', 'ci'], ['custom', 'two words']])
+        suggest.assert_called_once_with(project['repo_path'])
 
     def test_add_project_uses_separate_api_address(self):
         self.cfg['plane']['api_url'] = 'https://api.plane.so'

@@ -23,7 +23,7 @@ import json
 import shlex
 import threading
 
-from . import alerts, choose, config, github, gitops, plane, proc, runs, sync, verify
+from . import alerts, choose, config, github, gitops, plane, prepare, proc, runs, sync, verify
 from .redact import log, scrub, warn
 from .stories import story_ref
 
@@ -135,7 +135,7 @@ def execute(cfg, conn, run):
     except (gitops.GitError, NotTested) as e:
         event("warning", f"Could not test main at {revision[:12]}; the next check retries: {e}")
         without_result(cfg, conn, project, "could not prepare the folder" if isinstance(e, gitops.GitError)
-                       else "sandbox refused to run tests")
+                       else "preparation or sandbox failed before tests")
         return runs.close(conn, run["id"], runs.FAILED, note="Main could not be tested.")
 
     # A new red episode clears the fix story; a fix story write in flight must not land on it.
@@ -162,12 +162,15 @@ def execute(cfg, conn, run):
 
 
 class NotTested(Exception):
-    """The sandbox refused to run the tests, so their result says nothing about main."""
+    """Preparation or the sandbox prevented testing, so main has no test result."""
 
 
 def _verify(cfg, project_cfg, agent_cfg, folder):
     """The story verify gate's command and limits, but a sandbox that couldn't be
     cleared is not a failing test: it would turn main red for the wrong reason."""
+    ok, output = prepare.run(cfg, project_cfg, agent_cfg, folder)
+    if not ok:
+        raise NotTested(output)
     result = proc.run_sandboxed(cfg, project_cfg["verify_command"], cwd=folder, timeout=verify.VERIFY_TIMEOUT,
                                 run_as=agent_cfg.get("run_as"))
     if result.returncode is None and not result.timed_out:

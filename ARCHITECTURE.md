@@ -339,6 +339,19 @@ Every cycle updates a single UTC heartbeat with the git commit captured once whe
 
 ### Mechanical verify gate
 
+Each project may set `prepare_commands` to an ordered list of argument lists,
+for example `[["npm", "ci"], ["npm", "run", "generate"]]`, and
+`prepare_timeout_seconds` to a positive whole number (default 900 seconds per
+command). With no commands configured, preparation does nothing. Commands run
+in the checkout, in the sandbox as the selected agent's account, with the
+sandbox's existing network access. DD prepares created or rebuilt story folders
+before starting the agent, prepares again before verification and after combining
+with main, and prepares main-check folders before tests. Commands should be safe
+to repeat. A failure on a fresh checkout blocks the story as an environment
+problem, with the command's output; the agent is not blamed. Failures with agent
+work present are sent back for up to two repair attempts. A main-check preparation
+failure leaves main's health unchanged and is retried as an unavailable check.
+
 Each project's config names a **verify command**: whatever proves the code is not broken in that repo (test suite, build, lint, or some combination). It runs in the agent's worktree after the agent finishes and before the PR reaches review. **It runs as the sandbox user**, because it executes code the agent may have written.
 
 Nonzero exit sends the story to Blocked with the output on the item. It never reaches the human review queue.

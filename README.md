@@ -69,6 +69,13 @@ support for them is planned.
 
 ## How it works
 
+Projects can configure ordered `prepare_commands` argument lists to install
+dependencies or generate code before agents and tests run. Preparation uses the
+agent's sandbox and network access; `prepare_timeout_seconds` defaults to 900
+seconds per command. Fresh-checkout failures block as environment problems;
+failures after agent changes go back for repair. See [project setup](deploy/README.md#add-a-project).
+
+
 1. **Write a story.** Each story follows [STORY_TEMPLATE.md](STORY_TEMPLATE.md):
    a user story, acceptance criteria, and what is in and out of scope.
 2. **Move it to In Progress.** DD sees it on its next check, picks an agent
