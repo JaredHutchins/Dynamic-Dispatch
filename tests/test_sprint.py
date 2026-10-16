@@ -25,6 +25,7 @@ class SprintBoard(Board):
         runs.save_cycle_plan(self.conn, 'project', 'c', 'plan')
         self.rules = {i: {'depends_on': [], 'overlaps': []} for i in self.items}
         self.order = ['b', 'a', 'c']
+        self.client.get_cycle.return_value = {'description': 'Approved report'}
 
     def approve(self, cycle_id='c'):
         snapshot = runs.save_assessment_snapshot(self.conn, 'project', cycle_id, 'plan', 'revision',
@@ -685,7 +686,10 @@ class EarlyFinish(SprintBoard):
             issue['state'] = 'done'
         self.remote = self.enterContext(mock.patch.object(sprint.github, 'main_revision', return_value='last-merge'))
         self.enterContext(mock.patch.object(sprint.github, 'token', return_value='fake-token'))
-        self.alert = self.enterContext(mock.patch.object(alerts, 'send'))
+        # Only the early-end alert; an ended Cycle's release notes send their own.
+        self.alert = mock.Mock()
+        self.enterContext(mock.patch.object(alerts, 'send')).side_effect = (
+            lambda *args, **kwargs: self.alert(*args, **kwargs) if 'finished early' in args[3] else None)
         self.health()
 
     def health(self, state='green', revision='last-merge'):

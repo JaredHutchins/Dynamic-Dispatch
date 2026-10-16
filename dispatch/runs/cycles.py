@@ -1,4 +1,5 @@
-"""Durable Cycle membership used to reconcile board columns, end-of-Cycle carry-overs, and each Cycle's plan item."""
+"""Durable Cycle membership used to reconcile board columns, end-of-Cycle carry-overs, each Cycle's plan item
+and whether its draft release notes are written."""
 
 import json
 
@@ -60,6 +61,12 @@ def drop_carry_over(conn, project, cycle_id, issue_id):
     with conn:
         conn.execute("DELETE FROM carry_overs WHERE project = ? AND cycle_id = ? AND issue_id = ?",
                      (project, cycle_id, issue_id))
+
+
+def carried_over(conn, project, cycle_id):
+    """Every story this Cycle carried over, in the order they were saved."""
+    return conn.execute("SELECT * FROM carry_overs WHERE project = ? AND cycle_id = ? ORDER BY rowid",
+                        (project, cycle_id)).fetchall()
 
 
 def claim_carried_over(conn, project, cycle_id):
@@ -173,6 +180,22 @@ def save_early_cycle_end(conn, project, cycle_id, end_date):
 def claim_early_cycle_alert(conn, project, cycle_id):
     with conn:
         return conn.execute("UPDATE early_cycle_ends SET alerted = 1 WHERE project = ? AND cycle_id = ? "
+                            "AND alerted = 0", (project, cycle_id)).rowcount == 1
+
+
+def release_notes_written(conn, project, cycle_id):
+    return conn.execute("SELECT 1 FROM release_notes WHERE project = ? AND cycle_id = ?",
+                        (project, cycle_id)).fetchone() is not None
+
+
+def save_release_notes(conn, project, cycle_id):
+    with conn:
+        conn.execute("INSERT OR IGNORE INTO release_notes (project, cycle_id) VALUES (?, ?)", (project, cycle_id))
+
+
+def claim_release_notes_alert(conn, project, cycle_id):
+    with conn:
+        return conn.execute("UPDATE release_notes SET alerted = 1 WHERE project = ? AND cycle_id = ? "
                             "AND alerted = 0", (project, cycle_id)).rowcount == 1
 
 
