@@ -1,10 +1,14 @@
 # Run DD in a container
 
-This guide takes a fresh installation through a working Gemini container.
-The supplied image supports ARM64 and Intel/AMD64 and installs Python, Git,
-sudo and Gemini CLI 0.59.0. It installs only the Gemini agent; choose `gemini`
-in setup. DD runs as `dd`, and Gemini runs as `dd-gemini`. No privileged
-container or Docker socket mount is needed.
+This guide takes a fresh installation through a working container with any
+mix of DD's agents: Claude Code, Codex and Gemini. The supplied image
+supports ARM64 and Intel/AMD64 and installs Python, Git, sudo and, for each
+agent you choose when building it, that agent's tool at a pinned version:
+Claude Code 2.1.283, Codex 0.158.0 and Gemini CLI 0.59.0. Without a choice it
+includes Gemini only, as earlier images did. DD runs as `dd`; Claude Code runs
+as `dd-agent`, Codex as `dd-codex` and Gemini as `dd-gemini`, each with its own
+group, sudo rule and home volume, as on a Linux host. No privileged container
+or Docker socket mount is needed.
 
 ## 1. What you need
 
@@ -21,18 +25,60 @@ container or Docker socket mount is needed.
   project creation (`--add-project`) requires the App. DD also needs a
   separate HTTPS Git login with write access for pushing commits.
 - A Plane workspace, with a separate identity for the Orchestrator (DD's
-  Plane account) and Gemini. Follow [Set up Plane Cloud](PLANE_CLOUD.md) to
-  create and install the apps, or prepare each identity's personal token.
-  Note the workspace slug, credentials and approver's GitHub username.
-  For Cycles, also obtain the approver's Plane user ID as described there.
-  Use this guide's container commands instead of that page's host installer
-  and systemd commands. Its install-link helper can run in the container
-  shell opened in step 5.
-- For Gemini, a Google Cloud project with billing and the Vertex AI API
-  enabled, access to the configured model, and permission to arrange the
-  login and spending controls below.
+  Plane account) and for each agent you include. Follow
+  [Set up Plane Cloud](PLANE_CLOUD.md) to create and install the apps, or
+  prepare each identity's personal token. Note the workspace slug,
+  credentials and approver's GitHub username. For Cycles, also obtain the
+  approver's Plane user ID as described there. Use this guide's container
+  commands instead of that page's host installer and systemd commands. Its
+  install-link helper can run in the container shell opened in step 5.
+- For each agent you include, a way for it to log in:
+  - **Claude Code:** a Claude subscription that includes Claude Code, to
+    create a long-lived login token with `claude setup-token` on another
+    computer, or an Anthropic API key.
+  - **Codex:** a ChatGPT plan that includes Codex, to sign in from a browser
+    on another device, or an OpenAI API key.
+  - **Gemini:** a Google Cloud project with billing and the Vertex AI API
+    enabled, access to the configured model, and permission to arrange the
+    login and spending controls in step 3.
 
-## 2. Give Gemini a limited Google login
+## 2. Choose the agents
+
+The image's `DD_AGENTS` build setting lists the agents it includes, separated
+by spaces: any of `claude`, `codex` and `gemini`. Record your choice in a
+host-local Compose override file, so every later build uses the same agents.
+Keep only the names you want on the `DD_AGENTS` line:
+
+```sh
+export DD_CONTAINER_OVERRIDE="$HOME/.config/dd/container.yaml"
+mkdir -p "$(dirname "$DD_CONTAINER_OVERRIDE")"
+cat > "$DD_CONTAINER_OVERRIDE" <<'YAML'
+services:
+  dd:
+    build:
+      args:
+        DD_AGENTS: claude codex gemini
+YAML
+```
+
+The override is a new host-local file, not a supplied repository file. The
+build stops with an error naming a word it doesn't know. The image installs
+each chosen tool, creates its account with a fixed ID and runs
+`deploy/dd-install --container` for exactly those agents; every start runs the
+installer again for the same agents. The other agents' tools, accounts and
+sudo rules are not in the image, and their home volumes stay empty.
+
+To change the agents later, edit the override and rebuild with
+`dc up -d --build` (step 5 defines `dc`). Before leaving an agent out, remove
+it from `agents` and every project's `agents` list in `config.json`, or DD
+cannot run it. After adding one, run setup again (step 5) to add it to
+`config.json`, then log it in (step 6).
+
+## 3. Gemini only: a limited Google login and usage limits
+
+Skip this step if you did not include Gemini.
+
+### Give Gemini a limited Google login
 
 Use a dedicated service account in a dedicated project, permitted to use
 Vertex AI only. Ask the administrator to grant Vertex AI User
@@ -61,7 +107,7 @@ below require an approved key; a keyless arrangement needs administrator
 validation before continuing. See [Google's policy documentation](https://docs.cloud.google.com/organization-policy/restrict-service-accounts)
 and [Gemini authentication](https://geminicli.com/docs/get-started/authentication/).
 
-## 3. Set usage limits before the first Gemini run
+### Set usage limits before the first Gemini run
 
 In the Google Cloud console, select the project, open **IAM & Admin → Quotas
 & System Limits**, and filter for the Vertex AI API. Find the adjustable
@@ -93,21 +139,25 @@ Setup's `config.json.backup-*` files are equally private and contain secrets.
 
 DD's Git login lives on `dd-home`; its App key can live on `dd-config`.
 The other named volumes retain the checkout, history database, project clones,
-story worktrees, agent environment files and Gemini's home. Protect backups
-of all these volumes. `docker compose down` retains them; adding `-v` deletes
-them, including credentials and work.
+story worktrees, agent environment files and each agent's home
+(`dd-claude-home`, `dd-codex-home` and `dd-gemini-home`). Each agent's home
+is private to its account, so neither DD nor another agent can read a login
+kept there. Protect backups of all these volumes. `docker compose down`
+retains them; adding `-v` deletes them, including credentials and work.
 
-For the Google key, set these host variables, replacing the example path
-with the absolute path to your existing file:
+If you included Gemini, set this host variable to the absolute path of your
+existing Google key, then add the key's mount to the override from step 2,
+keeping your own `DD_AGENTS` line:
 
 ```sh
 export DD_GEMINI_CREDENTIAL=/absolute/path/outside-the-repository/vertex-key.json
 chmod 600 "$DD_GEMINI_CREDENTIAL"
-export DD_CONTAINER_OVERRIDE="$HOME/.config/dd/container.yaml"
-mkdir -p "$(dirname "$DD_CONTAINER_OVERRIDE")"
 cat > "$DD_CONTAINER_OVERRIDE" <<'YAML'
 services:
   dd:
+    build:
+      args:
+        DD_AGENTS: claude codex gemini
     volumes:
       - type: bind
         source: ${DD_GEMINI_CREDENTIAL:?Set the absolute Google key path}
@@ -118,8 +168,7 @@ services:
 YAML
 ```
 
-The override is a new host-local file, not a supplied repository file. It
-mounts only the key, read-only. The start step copies it to
+It mounts only the key, read-only. The start step copies it to
 `/home/dd-gemini/gemini-credential.json`, owned by `dd-gemini`, mode 400.
 Gemini's home is private; DD and other agents cannot read that copy. Removing
 the mount removes the copy on the next start. Never mount a directory over
@@ -128,8 +177,9 @@ the mount removes the copy on the next start. Never mount a directory over
 ## 5. Build, start and configure
 
 Define this host shell helper so every command uses the same override and
-Compose project. In a new terminal, return to this checkout and set the two
-variables above again before defining the helper.
+Compose project. In a new terminal, return to this checkout and set
+`DD_CONTAINER_OVERRIDE` (and `DD_GEMINI_CREDENTIAL`, with Gemini) again
+before defining the helper.
 
 ```sh
 dc() { docker compose -f deploy/compose.yaml -f "$DD_CONTAINER_OVERRIDE" "$@"; }
@@ -180,7 +230,8 @@ PY
 python3 main.py --setup --config /home/dd/config/config.json
 ```
 
-Choose only `gemini`. For the App key path enter
+When setup asks for the agents, it suggests the ones the image includes;
+choose exactly those. For the App key path enter
 `/home/dd/config/github-app.pem`. Setup checks the Plane identities, GitHub
 login and approver, then offers to add the first project. Accept, and supply
 its repository, name and test command. It creates the Plane columns and
@@ -216,8 +267,112 @@ PY
 exit
 ```
 
-Back on the host, write Gemini's environment file. Replace the project ID;
-these lines contain settings and a credential path, not the key itself:
+## 6. Log each agent in
+
+Do the part for each agent you included, from the host. Each login is
+readable only by its agent's account (and DD, for env files, so it can scrub
+their values from what it stores and posts). An env file lives on the
+`dd-agent-env` volume, owned by `root` and the agent's own group with mode
+640; a login an agent saves itself lives in its home volume. Never paste a
+token or key into a command line, config example or story: each command
+below reads it from a prompt or a file.
+
+Each smoke test makes one small, paid model call as the agent's account.
+Doctor (step 7) checks access and sandbox setup but makes no model call.
+
+### Claude Code
+
+**Privacy:** with a Claude subscription, open Claude's settings, find
+**Privacy** and turn off the setting that lets Anthropic use your chats and
+coding sessions to improve its models. An Anthropic API key is covered by
+Anthropic's commercial terms, under which its inputs and outputs aren't used
+for training by default. Check the provider's current settings and terms
+before the first run.
+
+Claude Code reads its login from `/etc/dynamic-dispatch/claude.env`. On
+another computer with Claude Code, run `claude setup-token` to create a
+long-lived subscription token. Then write the env file; the prompt doesn't
+echo what you paste:
+
+```sh
+dc run --rm --user root --entrypoint /bin/bash dd -c \
+  'read -rsp "Claude token: " token; echo; umask 027;
+   printf "CLAUDE_CODE_OAUTH_TOKEN=%s\n" "$token" > /etc/dynamic-dispatch/claude.env;
+   chown root:dd-agent /etc/dynamic-dispatch/claude.env; chmod 640 /etc/dynamic-dispatch/claude.env'
+```
+
+With an API key instead, replace `CLAUDE_CODE_OAUTH_TOKEN` with
+`ANTHROPIC_API_KEY`. Keep only one of the two lines in the file. Setup already
+points the `claude-code` agent at this file. Smoke test:
+
+```sh
+dc run --rm --user dd-agent --workdir /tmp --entrypoint /bin/bash dd -c \
+  'set -a; . /etc/dynamic-dispatch/claude.env; printf "Reply with OK\n" | claude -p --output-format json'
+```
+
+A working login prints JSON with `"result"`. The subscription token expires
+after about a year; write the file again with a new one.
+
+### Codex
+
+**Privacy:** signed in with ChatGPT, open ChatGPT's **Settings → Data
+controls** and turn off **Improve the model for everyone**, so Codex sessions
+aren't used for training; ChatGPT business plans exclude them by default. An
+OpenAI API key's data isn't used for training by default. Check the
+provider's current settings and terms before the first run.
+
+To sign in with ChatGPT, start a device login as Codex's account. It shows a
+web address and a code to enter on another device, then saves the login in
+`/home/dd-codex/.codex/auth.json` on Codex's home volume, readable only by
+`dd-codex`. If ChatGPT refuses the code, allow device code sign-in for Codex
+in ChatGPT's security settings and try again:
+
+```sh
+dc run --rm --user dd-codex --workdir /home/dd-codex --entrypoint codex dd login --device-auth
+dc run --rm --user dd-codex --workdir /home/dd-codex --entrypoint codex dd login status
+```
+
+To use an OpenAI API key instead, write Codex's env file and point the agent
+at it:
+
+```sh
+dc run --rm --user root --entrypoint /bin/bash dd -c \
+  'read -rsp "OpenAI API key: " key; echo; umask 027;
+   printf "CODEX_API_KEY=%s\n" "$key" > /etc/dynamic-dispatch/codex.env;
+   chown root:dd-codex /etc/dynamic-dispatch/codex.env; chmod 640 /etc/dynamic-dispatch/codex.env'
+dc run --rm -T --user dd --entrypoint python3 dd - <<'PY'
+import json
+from pathlib import Path
+path = Path('/home/dd/config/config.json')
+cfg = json.loads(path.read_text())
+cfg['agents']['codex']['env_file'] = '/etc/dynamic-dispatch/codex.env'
+path.write_text(json.dumps(cfg, indent=2) + '\n')
+path.chmod(0o600)
+PY
+```
+
+Smoke test, which works with either login:
+
+```sh
+dc run --rm --user dd-codex --workdir /tmp --entrypoint /bin/bash dd -c \
+  'set -a; [ ! -e /etc/dynamic-dispatch/codex.env ] || . /etc/dynamic-dispatch/codex.env;
+   printf "Reply with OK\n" | codex exec --json --skip-git-repo-check -'
+```
+
+A working login prints JSON events ending in `turn.completed`.
+
+### Gemini
+
+**Privacy:** Gemini here uses Vertex AI with the service account from step 3.
+Google Cloud's terms say Vertex AI doesn't use your prompts and responses to
+train its models without your permission, so there is no setting to turn
+off. Don't switch to a free Gemini API key or a personal Google login, whose
+terms may let Google use your prompts to improve its products. Check the
+provider's current terms before the first run.
+
+The mounted key from step 4 is Gemini's credential. Write Gemini's
+environment file, replacing the project ID; these lines contain settings and a
+credential path, not the key itself:
 
 ```sh
 dc run --rm -T --user root --entrypoint /bin/sh dd -c \
@@ -229,21 +384,34 @@ GOOGLE_APPLICATION_CREDENTIALS=/home/dd-gemini/gemini-credential.json
 ENV
 ```
 
-The initial setup's doctor may have reported the missing environment file;
-now rerun it explicitly. Doctor checks access and sandbox setup but does not
-make a model call. Run a small paid smoke test separately as Gemini:
+The first start in step 5 already copied the key into Gemini's home. Smoke
+test:
 
 ```sh
-dc run --rm --user dd --entrypoint python3 dd main.py --doctor --config /home/dd/config/config.json
 dc run --rm --user dd-gemini --workdir /tmp --entrypoint /bin/bash dd -c \
   'set -a; . /etc/dynamic-dispatch/gemini.env; printf "Reply with OK\n" | gemini --output-format json -m gemini-2.5-pro'
 ```
 
-Resolve every FAIL before continuing. A successful smoke test returns JSON
-with `response`. The configured model is `gemini-2.5-pro`; confirm your project
-can still use it, or choose an available model in `agents.gemini.command` and
-use the same model in the smoke test. Install any project-specific test tools
-before handing it stories; the supplied image has only the tools listed above.
+A successful smoke test returns JSON with `response`. The configured model
+is `gemini-2.5-pro`; confirm your project can still use it, or choose an
+available model in `agents.gemini.command` and use the same model in the
+smoke test.
+
+## 7. Check and start
+
+The initial setup's doctor may have reported missing env files; now rerun it
+explicitly:
+
+```sh
+dc run --rm --user dd --entrypoint python3 dd main.py --doctor --config /home/dd/config/config.json
+```
+
+Besides its usual checks, in the container it reports which agents the image
+includes and, for each, that its tool is installed, its account exists, its
+home volume is writable by it, and its env file and saved login are readable
+only by that agent. Resolve every FAIL before continuing. Install any
+project-specific test tools before handing it stories; the supplied image
+has only the tools listed above.
 
 If the first starts reached recovery's failure limit, follow the latch reset
 in troubleshooting before starting. Ignore any systemd start command printed
@@ -257,10 +425,10 @@ dc exec --user dd dd python3 main.py --doctor --config /home/dd/config/config.js
 
 Look for `watching ... polling every 30s` (or your configured interval), no
 repeated startup failures, and a passing doctor. Docker's `Up` status alone
-does not prove DD is healthy. Move a small story to In Progress in Plane and
-check that Gemini picks it up.
+does not prove DD is healthy. Move a small story to In Progress in Plane for
+each agent and check that it picks the story up.
 
-## 6. Day to day
+## 8. Day to day
 
 From the host, with the helper and variables from step 5:
 
@@ -315,7 +483,7 @@ The `version` is the running commit SHA. A stale heartbeat means DD is not
 currently polling. `git rev-parse HEAD` alone would show the checkout, which
 may have changed since the process started.
 
-## 7. Keep a Mac awake
+## 9. Keep a Mac awake
 
 The Mac, its container runtime and network must stay running. Keep it plugged
 in with its lid open. For one terminal session, run `caffeinate -i` and leave
@@ -352,7 +520,7 @@ launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/local.dd.awake.plis
 rm "$HOME/Library/LaunchAgents/local.dd.awake.plist"
 ```
 
-## 8. Troubleshooting
+## 10. Troubleshooting
 
 | Symptom | What to check |
 |---|---|
@@ -361,11 +529,15 @@ rm "$HOME/Library/LaunchAgents/local.dd.awake.plist"
 | Missing config or permission failure | Use `/home/dd/config/config.json` with every setup/doctor command, owned by `dd`, mode 600. Run setup as `dd`, never root. |
 | Plane rejects login | Cloud uses `https://app.plane.so` for web links and `https://api.plane.so` for API calls. Check workspace slug, app installation, permissions and distinct identities in [Plane Cloud setup](PLANE_CLOUD.md). |
 | GitHub API works but cloning/pushing fails | The App and Git push login are separate. Check the saved Git login as `dd`, repository access and Contents write permission. `--add-project` requires an App; read access alone does not prove push access. |
+| Build stops at `DD_AGENTS` | Use only `claude`, `codex` and `gemini`, separated by spaces, on the override's `DD_AGENTS` line. |
+| Claude Code 401 or "invalid API key" | Check `claude.env` has one line, `CLAUDE_CODE_OAUTH_TOKEN=` or `ANTHROPIC_API_KEY=` followed by the value with no quotes, and that the token hasn't expired. Do not print the file to debug it. |
+| Codex says it isn't logged in | Run the `codex login status` command from step 6 as `dd-codex`, and sign in again if needed. With an API key, check `codex.env` and the agent's `env_file` in config. |
 | Gemini 401/403 or missing credentials | Check the mounted file exists, its service account roles, Vertex API enablement and project ID. Confirm the env file points to the private copy. Do not print the key to debug it. |
 | Gemini 404 | Check model availability in your project and that the env file uses the intended location (`global` here). Match the smoke-test model to config. |
 | Gemini 429 / RESOURCE_EXHAUSTED | Check the applicable quota and usage. DD cools the agent down for `usage_limit_cooldown_minutes`; do not raise limits without reviewing spending. |
-| Doctor reports sudo, group or env failures | Confirm setup selected only Gemini, env ownership is `root:dd-gemini` and mode is 640. Restart to rerun the container installer; inspect its log before changing sandbox permissions. |
-| Tests cannot find a tool | Supply the project's test dependencies in the container; installing them on the host does not install them for Gemini. Ad-hoc container installs disappear on recreation. |
+| Doctor reports a missing tool or account | The image doesn't include that agent. Add it to `DD_AGENTS` and rebuild, or remove it from `config.json`. |
+| Doctor reports sudo, group or env failures | Confirm setup selected exactly the image's agents, and each env file is owned by `root` and its agent's group (`dd-agent`, `dd-codex` or `dd-gemini`) with mode 640. Restart to rerun the container installer; inspect its log before changing sandbox permissions. |
+| Tests cannot find a tool | Supply the project's test dependencies in the container; installing them on the host does not install them for the agents. Ad-hoc container installs disappear on recreation. |
 | No stories start | Check a fresh heartbeat, doctor results, Plane state/assignment, GitHub main checks and quota cooldown. The Mac or container runtime may have slept. |
 | No update arrives | Check exact-main GitHub Actions results, network/rate-limit warnings and active runs in logs. |
 

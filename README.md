@@ -80,7 +80,9 @@ support for them is planned.
 4. **DD tests it.** DD runs the project's tests on the agent's work, combines
    it with the latest main and tests it again. If something fails, the agent
    gets the failures back and a chance to fix them; if it still fails, the
-   story moves to Blocked with the details on it.
+   story moves to Blocked with the details on it. DD also checks that the
+   agent's summary either names the documentation it updated or says why none
+   was needed, and sends it back if not.
 5. **DD opens a pull request** and moves the story to In Review.
 6. **You review and merge.** A status light on the pull request tells you when
    it is safe to merge. If you want changes, move the story back to In

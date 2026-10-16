@@ -83,13 +83,14 @@ class SetupTests(unittest.TestCase):
         for name, value in patches.items():
             self.mocks[name] = self.enterContext(patch('dispatch.add_project.' + name, value))
 
-    def run_setup(self, reuse=False, cycles=True):
+    def run_setup(self, reuse=False, cycles=True, docs=('', '', '')):
         output = io.StringIO()
-        answers = ['Example', 'example/project', 'python3 -m unittest', 'y' if cycles else 'n']
+        answers = ['Example', 'example/project', 'python3 -m unittest', 'y' if cycles else 'n', *docs]
         if reuse:
             answers.append('y')
-        with patch('builtins.input', side_effect=answers), contextlib.redirect_stdout(output):
+        with patch('builtins.input', side_effect=answers) as ask, contextlib.redirect_stdout(output):
             result = add_project.run(self.path)
+        self.asked = '\n'.join(c.args[0] for c in ask.call_args_list)
         text = output.getvalue()
         for secret in ('fake-secret-plane', 'fake-secret-github', 'fake-secret-agent', 'fake-installation-secret'):
             self.assertNotIn(secret, text)
@@ -167,12 +168,47 @@ class SetupTests(unittest.TestCase):
 
     def test_existing_project_requires_consent(self):
         self.service.project_list.append({'id': 'existing', 'name': 'Example', 'identifier': 'EX'})
-        with patch('builtins.input', side_effect=['Example', 'example/project', 'tests', 'n', 'n']), \
+        with patch('builtins.input', side_effect=['Example', 'example/project', 'tests', 'n', '', '', '', 'n']), \
                 contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(add_project.run(self.path), 1)
         self.assertEqual(self.service.writes, [])
         self.assertEqual(self.run_setup(reuse=True, cycles=False)[0], 0)
         self.assertNotIn('cycles', config.load(self.path)['projects']['Example'])
+
+    def test_documentation_check_offers_the_defaults(self):
+        result, text = self.run_setup()
+        self.assertEqual(result, 0)
+        self.assertIn('[README.md, docs/**]', self.asked)
+        self.assertIn('[tests/**, test/**]', self.asked)
+        self.assertEqual(config.load(self.path)['projects']['Example']['docs'], config.DEFAULT_DOCS)
+
+    def test_documentation_check_can_be_edited_and_offers_the_saved_answers_next_time(self):
+        edited = ('', 'README.md, guide/*.md', 'none')
+        self.assertEqual(self.run_setup(docs=edited)[0], 0)
+        saved = json.loads(self.path.read_text())['projects']['Example']['docs']
+        self.assertEqual(saved, {'check': True, 'documentation': ['README.md', 'guide/*.md'], 'exempt': []})
+        result, text = self.run_setup(reuse=True)
+        self.assertEqual(result, 0)
+        self.assertIn('[README.md, guide/*.md]', self.asked)
+        self.assertIn('[none]', self.asked)
+        self.assertIn('already saved', text)
+
+    def test_documentation_check_can_be_turned_off(self):
+        self.assertEqual(self.run_setup(docs=('n',))[0], 0)
+        saved = config.load(self.path)['projects']['Example']['docs']
+        self.assertFalse(saved['check'])
+        result, text = self.run_setup(reuse=True, docs=('',))
+        self.assertIn('[y/N]', self.asked)
+        self.assertNotIn('documentation [', self.asked)
+        self.assertIn('already saved', text)
+
+    def test_documentation_answers_are_checked(self):
+        for docs in (('maybe',), ('', 'none'), ('', '/etc/passwd')):
+            with self.subTest(docs=docs):
+                result, text = self.run_setup(docs=docs)
+                self.assertEqual(result, 1)
+                self.assertIn('Setup stopped:', text)
+        self.assertEqual(self.service.writes, [])
 
     def test_missing_github_steps_stop_before_plane(self):
         for name, failure in [('github.repository', add_project.github.GitHubError('fake-secret-github')),

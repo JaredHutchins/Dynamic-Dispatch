@@ -51,6 +51,8 @@ if mode == "limit_mixed":
 if mode in ("usage", "long"):
     with open("feature.py", "a") as f: f.write("VALUE = 4\n")
 result = "Changed things " + secret
+# Every summary ends with the Docs line DD checks; tests about the line replace the agent.
+docs = "\n\nDocs: none needed, because the fake change has nothing to document."
 if mode == "finished":
     assert "finished and tested earlier but never reviewed" in prompt
     assert "current description and acceptance criteria" in prompt
@@ -65,6 +67,7 @@ if mode == "usage":
     cost = "0.5"
 if mode == "long":
     result = "x" * 50000
+result += docs
 
 if style == "codex":
     def event(**fields): print(json.dumps(fields))

@@ -358,7 +358,8 @@ class Doctor(unittest.TestCase):
 
     def test_agent_checks(self):
         code, output = self.run_doctor()
-        self.which.assert_called_once_with('fake-private-command', path=doctor.AGENT_PATH)
+        # The first lookup is the configured agent's; a container then looks up its included agents' tools.
+        self.assertEqual(self.which.call_args_list[0], mock.call('fake-private-command', path=doctor.AGENT_PATH))
         self.account.assert_any_call('fake-private-account')
         self.assertIn("WARN Agent 1 login: the login itself can't be checked without running the agent; "
                       "DD's login alerts report a rejected login on the first run.", output)
@@ -476,11 +477,12 @@ class ContainerDoctor(Doctor):
     def setUp(self):
         super().setUp()
         os.environ[container.MARKER] = '1'
+        os.environ.pop(doctor.AGENTS_SETTING, None)
         self.volumes = self.enterContext(mock.patch.object(doctor.doctor_sandbox, 'check_container',
                                                            side_effect=self.container_checks))
 
-    def container_checks(self, volumes, credentials, report):
-        for label, path, login in volumes + credentials:
+    def container_checks(self, volumes, env_files, logins, report):
+        for label, path, login in volumes + env_files + logins:
             report('OK', label, 'Fake metadata allows it.')
 
     def test_success_and_personal_warning(self):
@@ -490,7 +492,8 @@ class ContainerDoctor(Doctor):
                       'Credential mount folder', 'Rollback helper', 'Launcher', 'Sudo rule agent 1',
                       'Volume DD home', 'Volume checkout', 'Volume config', 'Volume history',
                       'Volume repositories', 'Volume story folders', 'Volume agent env files',
-                      'Volume Gemini home', 'Gemini credential'):
+                      'Included agents', 'Gemini tool', 'Gemini account', 'Volume Gemini home',
+                      'Gemini env file', 'Gemini login'):
             self.assertIn('OK ' + check + ':', output)
         for check in ('Service', 'Service account', 'Service checkout', 'Rollback service'):
             self.assertIn(f"SKIP {check}: skipped: systemd units don't apply in a container", output)
@@ -519,7 +522,7 @@ class ContainerDoctor(Doctor):
                 self.host()
 
     def test_container_check_failures_set_exit_status(self):
-        self.volumes.side_effect = lambda volumes, credentials, report: report(
+        self.volumes.side_effect = lambda volumes, env_files, logins, report: report(
             'FAIL', volumes[0][0], "Folder isn't writable by its account.")
         code, output = self.run_doctor()
         self.assertEqual(code, 1)
@@ -528,11 +531,76 @@ class ContainerDoctor(Doctor):
     def test_volumes_match_compose(self):
         compose = (doctor.CHECKOUT / 'deploy' / 'compose.yaml').read_text()
         mounted = re.findall(r'^      - [\w-]+:(\S+)$', compose, re.M)
-        self.assertEqual(sorted(path for label, path, login in doctor.VOLUMES), sorted(mounted))
+        homes = [agent[3] for agent in doctor.CONTAINER_AGENTS.values()]
+        self.assertEqual(sorted([path for label, path, login in doctor.VOLUMES] + homes), sorted(mounted))
         self.run_doctor()
-        volumes, credentials, report = self.volumes.call_args.args
-        self.assertEqual([path for label, path, login in volumes], [path for label, path, login in doctor.VOLUMES])
-        self.assertEqual(credentials, [('Gemini credential', '/home/dd-gemini/gemini-credential.json', 'dd-gemini')])
+        volumes, env_files, logins, report = self.volumes.call_args.args
+        self.assertEqual([path for label, path, login in volumes],
+                         [path for label, path, login in doctor.VOLUMES] + ['/home/dd-gemini'])
+        self.assertEqual(env_files, [('Gemini env file', '/etc/dynamic-dispatch/gemini.env', 'dd-gemini')])
+        self.assertEqual(logins, [('Gemini login', '/home/dd-gemini/gemini-credential.json', 'dd-gemini')])
+
+    def test_each_agent_alone_and_all_together(self):
+        """Only the image's agents are checked: tool, account, home volume and each login file."""
+        expected = {
+            'claude': ('Claude Code', 'claude', 'dd-agent', '/home/dd-agent',
+                       ['/etc/dynamic-dispatch/claude.env'], []),
+            'codex': ('Codex', 'codex', 'dd-codex', '/home/dd-codex',
+                      ['/etc/dynamic-dispatch/codex.env'], ['/home/dd-codex/.codex/auth.json']),
+            'gemini': ('Gemini', 'gemini', 'dd-gemini', '/home/dd-gemini',
+                       ['/etc/dynamic-dispatch/gemini.env'], ['/home/dd-gemini/gemini-credential.json'])}
+        for setting in ('claude', 'codex', 'gemini', 'claude codex gemini'):
+            with self.subTest(setting=setting):
+                os.environ[doctor.AGENTS_SETTING] = setting
+                self.which.reset_mock()
+                self.account.reset_mock()
+                code, output = self.run_doctor()
+                self.assertEqual(code, 0)
+                agents = setting.split()
+                names = ', '.join(expected[agent][0] for agent in agents)
+                self.assertIn(f'OK Included agents: The image includes {names}.', output)
+                volumes, env_files, logins, report = self.volumes.call_args.args
+                for agent in expected:
+                    label, tool, account, home, env_paths, login_paths = expected[agent]
+                    included = agent in agents
+                    self.assertEqual(f'OK {label} tool:' in output, included)
+                    self.assertEqual(f'OK {label} account:' in output, included)
+                    self.assertEqual(any(call.args[0] == tool for call in self.which.call_args_list), included)
+                    self.assertEqual(('Volume ' + label + ' home', home, account) in volumes, included)
+                    for path in env_paths:
+                        self.assertEqual((label + ' env file', path, account) in env_files, included)
+                    for path in login_paths:
+                        self.assertEqual((label + ' login', path, account) in logins, included)
+                    if included:
+                        self.account.assert_any_call(account)
+
+    def test_a_missing_tool_or_account_fails_for_that_agent(self):
+        os.environ[doctor.AGENTS_SETTING] = 'claude codex gemini'
+        self.which.side_effect = lambda name, path=None: None if name == 'codex' else '/usr/bin/fake'
+        code, output = self.run_doctor()
+        self.assertEqual(code, 1)
+        self.assertIn('FAIL Codex tool: codex is not installed; rebuild the image with codex in DD_AGENTS', output)
+        self.assertIn('OK Claude Code tool:', output)
+        self.which.side_effect = None
+        self.account.side_effect = lambda name: (_ for _ in ()).throw(KeyError(name)) if name == 'dd-agent' else mock.Mock()
+        code, output = self.run_doctor()
+        self.assertEqual(code, 1)
+        self.assertIn('FAIL Claude Code account: dd-agent does not exist', output)
+        self.assertIn('OK Gemini account:', output)
+
+    def test_an_image_without_the_setting_included_only_gemini(self):
+        code, output = self.run_doctor()
+        self.assertIn('OK Included agents: The image includes Gemini.', output)
+        self.assertNotIn('Codex', output)
+
+    def test_an_unknown_or_empty_setting_fails(self):
+        for setting in ('', 'claude cursor', 'claude,codex'):
+            with self.subTest(setting=setting):
+                os.environ[doctor.AGENTS_SETTING] = setting
+                code, output = self.run_doctor()
+                self.assertEqual(code, 1)
+                self.assertRegex(output, 'FAIL Included agents: .*deploy/CONTAINER.md')
+                self.assertNotIn('tool:', output)
 
     def test_service_missing_skips_dependants(self):
         self.units.clear()

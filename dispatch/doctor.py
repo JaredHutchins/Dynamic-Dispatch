@@ -30,9 +30,20 @@ VOLUMES = [('DD home', '/home/dd', 'dd'), ('checkout', '/home/dd/checkout', 'dd'
            ('config', '/home/dd/config', 'dd'), ('history', '/home/dd/.local/share/dynamic-dispatch', 'dd'),
            ('repositories', '/srv/dynamic-dispatch/repos', 'dd'),
            ('story folders', '/srv/dynamic-dispatch/worktrees', 'dd'),
-           ('agent env files', '/etc/dynamic-dispatch', 'root'), ('Gemini home', '/home/dd-gemini', 'dd-gemini')]
-# Where the start step copies each mounted credential for its agent account.
-CREDENTIALS = [('Gemini', '/home/dd-gemini/gemini-credential.json', 'dd-gemini')]
+           ('agent env files', '/etc/dynamic-dispatch', 'root')]
+# The image's build setting naming the agents it includes, as deploy/dd-container-start
+# reads it. An image built before the setting existed included only Gemini.
+AGENTS_SETTING, DEFAULT_AGENTS = 'DD_AGENTS', 'gemini'
+# Each agent the image can include: its name in reports, its tool, its account, its home
+# (its own volume in deploy/compose.yaml), the env files that can hold its login and the
+# login files it keeps in its home. Gemini's is the copy the start step makes of the mount.
+CONTAINER_AGENTS = {
+    'claude': ('Claude Code', 'claude', 'dd-agent', '/home/dd-agent', ['/etc/dynamic-dispatch/claude.env'], []),
+    'codex': ('Codex', 'codex', 'dd-codex', '/home/dd-codex', ['/etc/dynamic-dispatch/codex.env'],
+              ['/home/dd-codex/.codex/auth.json']),
+    'gemini': ('Gemini', 'gemini', 'dd-gemini', '/home/dd-gemini', ['/etc/dynamic-dispatch/gemini.env'],
+               ['/home/dd-gemini/gemini-credential.json']),
+}
 
 
 def service_reason(error, service, credential, fallback):
@@ -326,10 +337,36 @@ def _check_agents(cfg, check, report, require):
     return accounts
 
 
+def _included_agents(report):
+    names = os.environ.get(AGENTS_SETTING, DEFAULT_AGENTS).split()
+    if not names or any(name not in CONTAINER_AGENTS for name in names):
+        report('FAIL', 'Included agents', 'DD_AGENTS names no agent, or one DD does not know; rebuild the image '
+               'with any of claude, codex and gemini, as deploy/CONTAINER.md describes.')
+        return []
+    agents = list(dict.fromkeys(names))
+    report('OK', 'Included agents', 'The image includes ' + ', '.join(CONTAINER_AGENTS[a][0] for a in agents) + '.')
+    return agents
+
+
+def _check_container_agents(check, report, require):
+    """Each included agent's tool and account, and the volumes and login files of all of them."""
+    volumes = [('Volume ' + label, path, login) for label, path, login in VOLUMES]
+    env_files, logins = [], []
+    for agent in _included_agents(report):
+        label, tool, account, home, env_paths, login_paths = CONTAINER_AGENTS[agent]
+        rebuild = f'rebuild the image with {agent} in DD_AGENTS, as deploy/CONTAINER.md describes.'
+        check(label + ' tool', lambda: require(shutil.which(tool, path=AGENT_PATH)),
+              f"{tool} is installed on the launcher's PATH.", f'{tool} is not installed; ' + rebuild)
+        check(label + ' account', lambda: pwd.getpwnam(account), f'{account} exists.',
+              f'{account} does not exist; ' + rebuild)
+        volumes.append((f'Volume {label} home', home, account))
+        env_files += [(f'{label} env file', path, account) for path in env_paths]
+        logins += [(f'{label} login', path, account) for path in login_paths]
+    doctor_sandbox.check_container(volumes, env_files, logins, report)
+
+
 def _check_container(check, report, require):
-    doctor_sandbox.check_container([('Volume ' + label, path, login) for label, path, login in VOLUMES],
-                                   [(label + ' credential', path, login) for label, path, login in CREDENTIALS],
-                                   report)
+    _check_container_agents(check, report, require)
     def start_step():
         st = os.lstat(START_STEP)
         require(stat.S_ISREG(st.st_mode) and st.st_uid == 0 and st.st_mode & 0o111)

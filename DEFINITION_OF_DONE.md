@@ -43,7 +43,15 @@ review.
 10. **The summary is plain English.** What changed, why, and anything the
     agent was unsure about. The summary is the agent's final message, written
     only after all work and checks have finished. It becomes the pull request
-    description, so it must be complete, not a status update.
+    description, so it must be complete, not a status update. Its last line
+    is the Docs line: `Docs: updated <files>`, naming each documentation
+    file the branch changes, or `Docs: none needed, because <reason>`. DD
+    checks it against the branch's changes before the pull request is
+    opened or updated, and sends a missing or wrong line back. For this
+    project, documentation is `README.md`, `ARCHITECTURE.md`, `SECURITY.md`,
+    `DEFINITION_OF_DONE.md`, `REVIEW_RUBRIC.md`, `STORY_TEMPLATE.md` and
+    `deploy/*.md`; changes only to `tests/` need no documentation
+    update, but still need the line.
 11. **Decisions are written down.** If the change alters a design decision,
     `ARCHITECTURE.md` is updated in the same pull request.
 

@@ -20,7 +20,7 @@ from .lifecycle import (INTERRUPTED_TOO_OFTEN, await_blocked, await_review, awai
                         combined_note, counts_since, decision_after, defer_run, earlier_pull_request, enqueue,
                         forget_worktree, interrupt_running, is_active, last_agent, last_builder, last_committed,
                         last_pushed, limit_streak, mark_comment_posted, mark_committed, mark_pushed, old_failed,
-                        record_combine, record_repair, repair_attempts, restarts, review_candidates)
+                        record_combine, record_repair, repair_attempts, restarts, review_candidates, save_docs_line)
 from .slots import (agent_work, busy_agents, claim_next, cooldowns, end_wait, has_running, mark_wait_announced,
                     release_slot, save_cooldown, set_agent, start_wait, wait_for, waits)
 from .pull_requests import (approval_noticed, light, mark_approval_noticed, owed_lights, pr_settled, pull_request,
