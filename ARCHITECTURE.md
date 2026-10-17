@@ -352,6 +352,25 @@ problem, with the command's output; the agent is not blamed. Failures with agent
 work present are sent back for up to two repair attempts. A main-check preparation
 failure leaves main's health unchanged and is retried as an unavailable check.
 
+A project may also list `services`: helper programs, such as a test database,
+each with a name, a start command, a ready check (`"port"` or a command that
+succeeds when ready) and `timeout_seconds` (default 60). Because DD reaps every
+process of the agent's account before and after each sandboxed call, a helper
+can only live inside the call it serves. So for tests, main checks and agent
+runs (not preparation), `dispatch/services.py` wraps the command in
+`dispatch/service_runner.py`, run by `/usr/bin/python3` inside the same
+sandboxed call as the agent's account: it starts each helper, waits until it is
+ready, runs the command, then stops the helpers and removes their data. DD picks
+a free port for each helper per run, and remembers which it has handed out, so
+runs in different agent accounts never share one. It is passed as
+`DD_SERVICE_<NAME>_PORT`, with a temporary `DD_SERVICE_<NAME>_DATA_DIR` that
+only that run uses. The sandbox's time limit grows by each helper's ready time.
+A helper that fails to start marks the call as never started, with its output:
+before the agent runs, the story is blocked as an environment problem; in a main
+check, main is not tested; after the agent's changes, the tests fail. Helpers
+never use Docker, which would give the agent's account control of the machine;
+containers a project needs run beside DD and are reached through `test_env`.
+
 Each project's config names a **verify command**: whatever proves the code is not broken in that repo (test suite, build, lint, or some combination). It runs in the agent's worktree after the agent finishes and before the PR reaches review. **It runs as the sandbox user**, because it executes code the agent may have written.
 
 Nonzero exit sends the story to Blocked with the output on the item. It never reaches the human review queue.

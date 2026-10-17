@@ -294,9 +294,10 @@ def build_command(agent_cfg, prompt):
     return [prompt if part == "{prompt}" else part for part in agent_cfg["command"]]
 
 
-def _failed(error, usage_limit=False):
+def _failed(error, usage_limit=False, helpers_failed=False):
     return {"ok": False, "summary": None, "usage": {}, "cost_usd": None,
-            "usage_limit": usage_limit, "usage_limit_until": None, "error": error}
+            "usage_limit": usage_limit, "usage_limit_until": None, "error": error,
+            "helpers_failed": helpers_failed}
 
 
 def _describe_failure(agent_cfg, result, timeout, parsed):
@@ -341,6 +342,7 @@ def run(cfg, agent_cfg, prompt, worktree, project_cfg=None):
         env_file=agent_cfg.get("env_file"),
         project_cfg=project_cfg,
         input_text=prompt if agent_cfg.get("prompt_via", "argument") == "stdin" else None,
+        helpers=True,
     )
 
     login_key = 'agent:' + logins.fingerprint((agent_cfg.get('run_as'), agent_cfg.get('env_file'),
@@ -361,6 +363,8 @@ def run(cfg, agent_cfg, prompt, worktree, project_cfg=None):
     elif successful and not result.stdout_truncated:
         logins.login(login_key, agent_cfg['display_name'] + ' login', 'agent output', False)
 
+    if result.returncode is None and result.helpers_failed:
+        return _failed(f"{agent_cfg['display_name']} never started: {result.stderr}", helpers_failed=True)
     if result.timed_out or result.returncode != 0:
         reason = _describe_failure(agent_cfg, result, timeout, parsed_login)
         failed = _failed(f"{agent_cfg['display_name']}: {reason}",
