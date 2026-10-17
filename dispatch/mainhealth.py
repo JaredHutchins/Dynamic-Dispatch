@@ -172,7 +172,7 @@ def _verify(cfg, project_cfg, agent_cfg, folder):
     if not ok:
         raise NotTested(output)
     result = proc.run_sandboxed(cfg, project_cfg["verify_command"], cwd=folder, timeout=verify.VERIFY_TIMEOUT,
-                                run_as=agent_cfg.get("run_as"))
+                                project_cfg=project_cfg, run_as=agent_cfg.get("run_as"))
     if result.returncode is None and not result.timed_out:
         raise NotTested(result.stderr)
     if result.timed_out or result.returncode != 0:

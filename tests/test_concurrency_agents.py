@@ -292,9 +292,9 @@ class TwoAgents(Base):
         self.set_codex_mode("repair"); self.add_issue()
         original = agents.run
         calls = []
-        def agent(cfg, agent_cfg, prompt, worktree):
+        def agent(cfg, agent_cfg, prompt, worktree, project_cfg=None):
             calls.append(agent_cfg["display_name"])
-            result = original(cfg, agent_cfg, prompt, worktree)
+            result = original(cfg, agent_cfg, prompt, worktree, project_cfg=project_cfg)
             if len(calls) == 1:
                 MainChanges.advance_main(self, conflict=True)
                 self.set_mode("limit")  # Claude's repair hits its limit

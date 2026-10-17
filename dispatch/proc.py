@@ -14,6 +14,8 @@ run at a time; concurrent runs will need a user or cgroup per run.
 import subprocess
 import threading
 
+from . import redact
+
 
 DEFAULT_OUTPUT_LIMIT = 2 * 1024 * 1024  # bytes kept from each end of a stream
 
@@ -120,7 +122,7 @@ def run_capped(command, cwd=None, timeout=None, limit=DEFAULT_OUTPUT_LIMIT, env=
     return Result(proc.returncode, out.text(), err.text(), timed_out, out.truncated)
 
 
-def sandboxed(cfg, command, cwd, timeout, run_as=None, env_file=None):
+def sandboxed(cfg, command, cwd, timeout, run_as=None, env_file=None, project_cfg=None):
     """Wrap a command so it runs as the sandbox user via the launcher."""
     sandbox = cfg["sandbox"]
     wrapped = [
@@ -130,6 +132,13 @@ def sandboxed(cfg, command, cwd, timeout, run_as=None, env_file=None):
     ]
     if env_file:
         wrapped += ["--env-file", env_file]
+    project = project_cfg or {}
+    for key, value in project.get('test_env', {}).items():
+        wrapped += ['--test-env', key + '=' + value]
+    if project.get('test_env_file'):
+        wrapped += ['--test-env-file', project['test_env_file']]
+    for directory in project.get('test_path', []):
+        wrapped += ['--test-path', directory]
     return wrapped + ["--"] + list(command)
 
 
@@ -146,18 +155,19 @@ def reap(cfg, run_as=None):
 
 
 def run_sandboxed(cfg, command, cwd, timeout, run_as=None, env_file=None,
-                  limit=DEFAULT_OUTPUT_LIMIT, input_text=None):
+                  limit=DEFAULT_OUTPUT_LIMIT, input_text=None, project_cfg=None):
     """Run a command as the sandbox user, with no process of that user alive before or after.
 
     If either reap fails, the result is a failure: before, the sandbox isn't
     working; after, something may still be changing the worktree.
     """
+    redact.add_test_secrets(project_cfg or {})
     problem = reap(cfg, run_as)
     if problem:
         return _refused(f"Could not clear the sandbox user's processes before starting: {problem}")
     try:
         result = run_capped(
-            sandboxed(cfg, command, cwd, timeout, run_as=run_as, env_file=env_file),
+            sandboxed(cfg, command, cwd, timeout, run_as=run_as, env_file=env_file, project_cfg=project_cfg),
             timeout=int(timeout) + BACKSTOP_GRACE_SECONDS,
             limit=limit,
             input_text=input_text,

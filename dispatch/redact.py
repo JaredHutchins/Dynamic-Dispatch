@@ -9,6 +9,8 @@ import sys
 import threading
 from datetime import datetime
 
+from . import testenv
+
 _secrets = []
 _lock = threading.RLock()
 
@@ -37,6 +39,8 @@ def configure(cfg):
             alert_secrets.extend(devices)
         alert_secrets = [value for value in alert_secrets if isinstance(value, str) and value]
     set_secrets(found + alert_secrets)
+    for project in cfg.get('projects', {}).values():
+        add_test_secrets(project)
 
 
 def _bot_secret(bot):
@@ -51,10 +55,10 @@ def set_secrets(values):
         _secrets = sorted(unique, key=len, reverse=True)
 
 
-def add_secret(value):
+def add_secret(value, minimum_length=MIN_SECRET_LENGTH):
     """For a credential obtained while running, such as a GitHub App installation token."""
     with _lock:
-        if value and len(value) >= MIN_SECRET_LENGTH and value not in _secrets:
+        if value and len(value) >= minimum_length and value not in _secrets:
             _secrets.append(value)
             _secrets.sort(key=len, reverse=True)
 
@@ -89,3 +93,10 @@ def log(message):
 def warn(message):
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"{stamp} {scrub(message)}", file=sys.stderr, flush=True)
+
+
+def add_test_secrets(project):
+    """Retain old values too when a test secret file changes between runs."""
+    if project.get('test_env_file'):
+        for value in testenv.read_values(project['test_env_file']).values():
+            add_secret(value, minimum_length=1)

@@ -116,7 +116,7 @@ def with_main(ctx, issue, title, result):
                 repaired = True
                 repair = None
                 try:
-                    repair = agents.run(ctx.cfg, ctx.agent_cfg, prompt, ctx.worktree)
+                    repair = agents.run(ctx.cfg, ctx.agent_cfg, prompt, ctx.worktree, project_cfg=ctx.project_cfg)
                 finally:
                     ctx.event("agent_finished", "Repair finished" if repair else "Repair stopped unexpectedly")
                 runs.record_usage(ctx.conn, ctx.run["id"], ctx.run["agent"], repair.get("usage"), repair.get("cost_usd"),

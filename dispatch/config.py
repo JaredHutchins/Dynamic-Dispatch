@@ -16,6 +16,8 @@ import tempfile
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from . import testenv
+
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
 
 REQUIRED_TOP = ("plane", "github", "sandbox", "agents", "projects", "db_path")
@@ -185,6 +187,11 @@ def load(path=None, *, allow_empty_projects=False):
                     f"project '{name}' lists agent '{agent_name}', which is not defined in agents"
                 )
 
+    for project in cfg["projects"].values():
+        try:
+            testenv.validate(project)
+        except ValueError as error:
+            raise ConfigError(str(error)) from None
     _check_prepare(cfg)
     _check_cycles(cfg)
     _check_docs(cfg)
@@ -336,6 +343,7 @@ def check_env_files(cfg):
     Separate from load() because it looks up real accounts and files, so it
     only means something on the machine that runs the agents.
     """
+    check_test_env_files(cfg)
     for name, agent_cfg in cfg["agents"].items():
         env_file = agent_cfg.get("env_file")
         if not env_file:
@@ -452,3 +460,15 @@ def save(path, cfg, original=None):
     finally:
         if candidate is not None:
             candidate.unlink(missing_ok=True)
+
+
+def check_test_env_files(cfg):
+    """Validate host permissions and contents before any project starts."""
+    for project in cfg.get('projects', {}).values():
+        if project.get('test_env_file'):
+            try:
+                testenv.check_file(project['test_env_file'], [run_as(cfg, a) for a in project_agents(project)])
+                testenv.read_values(project['test_env_file'])
+            except (OSError, ValueError, KeyError):
+                raise ConfigError('Invalid test_env_file: check permissions, accounts and KEY=VALUE settings; '
+                                  'HOME and PATH are reserved') from None

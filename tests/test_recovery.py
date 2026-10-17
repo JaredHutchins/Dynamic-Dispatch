@@ -95,9 +95,9 @@ class Restarts(Base):
         self.cfg["agents"]["claude-code"]["run_as"] = "dd-agent"
         self.add_issue()
         original = agents.run
-        def moved_meanwhile(*args):
+        def moved_meanwhile(*args, **kwargs):
             MainChanges.advance_main(self)
-            return original(*args)
+            return original(*args, **kwargs)
         with mock.patch.object(agents, "run", side_effect=moved_meanwhile):
             first = self.crash_at(verify, "run_verify", calls=2)  # testing after combining with main
         worktree = self.wt_root / "dd-7"

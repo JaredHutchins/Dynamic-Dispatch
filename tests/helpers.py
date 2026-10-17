@@ -242,7 +242,7 @@ github._request = fake_gh_request
 # ---- sandbox stand-in: same call shape, no sudo --------------------------
 real_run_sandboxed = proc.run_sandboxed
 sandbox_calls = []
-def fake_run_sandboxed(cfg, command, cwd, timeout, run_as=None, env_file=None, limit=proc.DEFAULT_OUTPUT_LIMIT, input_text=None):
+def fake_run_sandboxed(cfg, command, cwd, timeout, run_as=None, env_file=None, limit=proc.DEFAULT_OUTPUT_LIMIT, input_text=None, project_cfg=None):
     sandbox_calls.append({"command": list(command), "cwd": str(cwd), "run_as": run_as, "env_file": env_file})
     return proc.run_capped(command, cwd=cwd, timeout=timeout, limit=limit, input_text=input_text)
 proc.run_sandboxed = fake_run_sandboxed

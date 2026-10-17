@@ -61,7 +61,7 @@ class Decisions(Base):
         self.head = git("rev-parse", "dd-7", cwd=self.origin).strip()
 
     def answer(self, summary=SUMMARY, changed=False):
-        def agent(cfg, agent_cfg, prompt, worktree):
+        def agent(cfg, agent_cfg, prompt, worktree, project_cfg=None):
             self.prompt = prompt
             if changed:
                 (Path(worktree) / "another.py").write_text("VALUE = 42\n")

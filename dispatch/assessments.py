@@ -139,7 +139,7 @@ def folder_state(folder):
 def ask(cfg, conn, run, snapshot, folder):
     prompt = prompts.assessment_prompt(snapshot)
     for attempt in range(2):
-        result = agents.run(cfg, config.agent(cfg, run['agent']), prompt, folder)
+        result = agents.run(cfg, config.agent(cfg, run['agent']), prompt, folder, project_cfg=cfg["projects"][run["project"]])
         runs.record_usage(conn, run['id'], run['agent'], result.get('usage'), result.get('cost_usd'), additive=True)
         if result.get('usage_limit'):
             choose.cool_down(cfg, conn, run['agent'], usage_limit_until=result.get('usage_limit_until'), run_id=run['id'])
