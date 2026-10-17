@@ -161,7 +161,10 @@ def run_sandboxed(cfg, command, cwd, timeout, run_as=None, env_file=None,
     If either reap fails, the result is a failure: before, the sandbox isn't
     working; after, something may still be changing the worktree.
     """
-    redact.add_test_secrets(project_cfg or {})
+    try:
+        redact.add_test_secrets(project_cfg or {})
+    except (OSError, ValueError):
+        return _refused("Could not read valid test_env_file settings; sandbox call refused.")
     problem = reap(cfg, run_as)
     if problem:
         return _refused(f"Could not clear the sandbox user's processes before starting: {problem}")

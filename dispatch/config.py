@@ -16,7 +16,7 @@ import tempfile
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from . import testenv
+from . import redact, testenv
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
 
@@ -117,6 +117,10 @@ def _check_self_update(cfg):
     repo = cfg["self_update_public_repo"]
     if not isinstance(repo, str) or not re.fullmatch(r"[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+", repo) or repo.split("/")[-1] in (".", ".."):
         raise ConfigError("self_update_public_repo must name a public GitHub repository as owner/repo")
+
+
+class ShortTestSecretError(ConfigError, testenv.ShortSecretError):
+    """Safe test-secret validation diagnostic for startup and doctor."""
 
 
 def load(path=None, *, allow_empty_projects=False):
@@ -468,7 +472,9 @@ def check_test_env_files(cfg):
         if project.get('test_env_file'):
             try:
                 testenv.check_file(project['test_env_file'], [run_as(cfg, a) for a in project_agents(project)])
-                testenv.read_values(project['test_env_file'])
+                testenv.read_values(project['test_env_file'], redact.MIN_SECRET_LENGTH)
+            except testenv.ShortSecretError as error:
+                raise ShortTestSecretError(str(error)) from None
             except (OSError, ValueError, KeyError):
                 raise ConfigError('Invalid test_env_file: check permissions, accounts and KEY=VALUE settings; '
                                   'HOME and PATH are reserved') from None

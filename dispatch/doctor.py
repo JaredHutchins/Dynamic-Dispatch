@@ -1,4 +1,4 @@
-"""Read-only setup checks. Never include config values or exception text in output."""
+"""Read-only setup checks. Only explicitly safe validation errors may be shown; never include secret values."""
 
 from datetime import datetime, timezone
 from pathlib import Path
@@ -112,6 +112,9 @@ def run(path=None, *, project=None):
             return None
         try:
             value = action()
+        except testenv.ShortSecretError as error:
+            report('FAIL', name, str(error))
+            return None
         except Exception as error:
             report('FAIL', name, service_reason(error, service, credential, bad) if service else bad)
             return None

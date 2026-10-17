@@ -98,5 +98,5 @@ def warn(message):
 def add_test_secrets(project):
     """Retain old values too when a test secret file changes between runs."""
     if project.get('test_env_file'):
-        for value in testenv.read_values(project['test_env_file']).values():
-            add_secret(value, minimum_length=1)
+        for value in testenv.read_values(project['test_env_file'], MIN_SECRET_LENGTH).values():
+            add_secret(value)

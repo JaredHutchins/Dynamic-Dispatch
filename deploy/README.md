@@ -252,11 +252,12 @@ The agent's model `env_file` remains separate, is loaded only for agent runs,
 and takes precedence if a name overlaps.
 
 **Agents can read these values. Use test-only secrets, never production secrets.**
-DD scrubs all nonempty values from this file, including short values, from stored
-output, logs and posts. Short or common values may therefore obscure ordinary
-text. Give the file to root or DD, with mode 640 and a dedicated group
-containing only DD and this project's agent accounts so the launcher can read
-it. DD and the agents also need traversal access to its parent directories.
+Each value must be at least 8 characters; startup and doctor reject shorter
+values, naming the setting but never its value. Non-secret settings belong in
+`test_env`. DD scrubs secret values from stored output, logs and posts. If the
+file later becomes unreadable, sandboxed commands fail without running. Give
+the file to root or DD, with mode 640 and a dedicated group containing only DD
+and this project's agent accounts so the launcher can read it. DD and the agents also need traversal access to its parent directories.
 Do not use ACLs or symlinks for the file. DD refuses startup if the file's
 owner, group or permissions expose it to unrelated accounts, or its contents
 are invalid. Doctor checks the same rules and that every tool directory exists.

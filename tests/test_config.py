@@ -37,6 +37,17 @@ class Config(unittest.TestCase):
             with self.subTest(key=key), self.assertRaises(config.ConfigError):
                 config.load(self.write(cfg))
 
+    def test_short_test_secret_refused_at_startup(self):
+        path = temporary_directory(self) / 'test.env'
+        cfg = {'projects': {'p': {'test_env_file': str(path), 'agents': []}}}
+        for value in ('test', '1', '', '1234567'):
+            path.write_text('PRIVATE=' + value + '\n')
+            path.chmod(0o600)
+            with self.subTest(length=len(value)), self.assertRaises(config.ConfigError) as caught:
+                config.check_env_files(cfg | {'agents': {}})
+            self.assertEqual(str(caught.exception), 'test_env_file setting PRIVATE must be at least 8 '
+                             'characters; non-secret settings belong in test_env')
+
     def test_public_self_update_setting(self):
         c = self.base()
         c["self_update_public_repo"] = "owner/repo"

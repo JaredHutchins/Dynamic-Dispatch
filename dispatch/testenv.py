@@ -29,7 +29,11 @@ def validate(project):
             raise ValueError('test_env_file must be an absolute file path')
 
 
-def read_values(path):
+class ShortSecretError(ValueError):
+    """A safe diagnostic containing only the validated setting name."""
+
+
+def read_values(path, minimum_length=0):
     """Literal KEY=VALUE lines, never shell code; errors never contain values."""
     values = {}
     with open(path, newline='') as stream:
@@ -44,6 +48,10 @@ def read_values(path):
                 raise ValueError('Duplicate setting in test_env_file')
             values[key] = value
     validate_values(values)
+    for key, value in values.items():
+        if len(value) < minimum_length:
+            raise ShortSecretError(f"test_env_file setting {key} must be at least {minimum_length} "
+                                   "characters; non-secret settings belong in test_env")
     return values
 
 

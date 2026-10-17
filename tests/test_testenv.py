@@ -24,7 +24,7 @@ class TestEnvironment(unittest.TestCase):
         self.work = self.folder / 'work'
         self.work.mkdir()
         self.secret = self.folder / 'test.env'
-        self.secret.write_text('TEST_PRIVATE=fake-test-value\nSHORT=xyz\n')
+        self.secret.write_text('TEST_PRIVATE=fake-test-value\n')
         self.secret.chmod(0o600)
         self.cfg = {'sandbox': {'user': 'unused', 'launcher': str(self.launcher)}}
 
@@ -86,12 +86,12 @@ class TestEnvironment(unittest.TestCase):
             with self.assertRaises(ValueError):
                 testenv.check_file(self.secret, [])
 
-    def test_all_secret_values_are_scrubbed_including_short_values(self):
+    def test_secrets_are_scrubbed_and_normal_text_is_preserved(self):
         cfg = {'plane': {}, 'github': {}, 'agents': {},
                'projects': {'p': {'test_env_file': str(self.secret)}}}
         self.addCleanup(redact.set_secrets, [])
         redact.configure(cfg)
-        self.assertEqual(redact.scrub('fake-test-value xyz'), '[redacted] [redacted]')
+        self.assertEqual(redact.scrub('fake-test-value test 1 xyz'), '[redacted] test 1 xyz')
 
     def test_invalid_settings(self):
         for project in ({'test_env': {'BAD-NAME': 'x'}}, {'test_env': {'OK': 1}},

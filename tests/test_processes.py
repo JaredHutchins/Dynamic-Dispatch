@@ -38,6 +38,20 @@ class Reaping(unittest.TestCase):
             proc.run_capped = original
         return calls, result
 
+    def test_unreadable_test_secrets_file_refuses_before_reaping(self):
+        # Moved away, or replaced by something that can't be read as a file.
+        with tempfile.TemporaryDirectory() as folder:
+            for path in (Path(folder) / "moved.env", Path(folder)):
+                with self.subTest(path=path.name):
+                    calls, result = [], None
+                    with mock.patch.object(proc, "run_capped", side_effect=lambda command, **kw: calls.append(command)):
+                        result = real_run_sandboxed(self.cfg, ["claude", "-p", "x"], "/srv/w/dd-1", 60,
+                                                    project_cfg={"test_env_file": str(path)})
+                    self.assertEqual(calls, [])
+                    self.assertIsNone(result.returncode)
+                    self.assertIn("test_env_file", proc.describe_failure(result, 60))
+                    self.assertNotIn(folder, result.stderr)
+
     def test_reaps_before_and_after(self):
         calls, result = self.run_with([0, 0, 0])
         self.assertEqual(result.returncode, 0)
