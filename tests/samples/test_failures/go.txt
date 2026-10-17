@@ -1,0 +1,5 @@
+--- FAIL: TestCart (0.00s)
+    --- FAIL: TestCart/total (0.00s)
+        cart_test.go:12: got 1, want 2
+FAIL
+FAIL example/cart 0.002s

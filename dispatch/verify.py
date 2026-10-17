@@ -15,16 +15,36 @@ def run_verify(cfg, project_cfg, agent_cfg, worktree):
     command = project_cfg.get("verify_command")
     if not command:
         return True, "(no verify command configured)"
+    timeout = project_cfg.get("verify_timeout_seconds", VERIFY_TIMEOUT)
     result = proc.run_sandboxed(
-        cfg, command, cwd=worktree, timeout=VERIFY_TIMEOUT, project_cfg=project_cfg, run_as=agent_cfg.get("run_as")
+        cfg, command, cwd=worktree, timeout=timeout, project_cfg=project_cfg, run_as=agent_cfg.get("run_as")
     )
     if result.timed_out or result.returncode != 0:
-        return False, proc.describe_failure(result, VERIFY_TIMEOUT)
+        return False, proc.describe_failure(result, timeout)
     return True, (result.stdout + result.stderr).strip() or "(no output)"
 
 
-def failing_tests(output):
-    """Names of the failing tests in verification output, in order, each once; empty if none are named."""
-    names = re.findall(r"^(?:FAIL|ERROR): (.+)$|^FAILED (?!\()(\S+)|\bfailed: (test[\w.:/\[\]-]+)",
-                       output, re.MULTILINE)
-    return list(dict.fromkeys(next(part for part in match if part).rstrip(":") for match in names))
+# Match failure detail headings, not progress counters or failed suite filenames.
+FAILURE_PATTERNS = (
+    r"^(?:FAIL|ERROR): (.+)$",
+    r"^FAILED (?!\()(\S+)",
+    r"\bfailed: (test[\w.:/\[\]-]+)",
+    r"^ +● (.+)$",  # Jest
+    r"^ FAIL +\S+ > (.+)$",  # Vitest
+    r"^ +\d+\) (.+(?:\n +[^\n]+)*?):$",  # Mocha failure details
+    r"^\s*--- FAIL: (\S+) \(.*\)$",  # go test
+    r"^test (.+) \.\.\. FAILED$",  # cargo test
+)
+
+
+def failing_tests(output, project_cfg=None):
+    """Failing names in output order, once each; custom patterns capture one name."""
+    output = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", output)
+    patterns = (*FAILURE_PATTERNS, *(project_cfg or {}).get("test_failure_patterns", []))
+    matches = []
+    for pattern in patterns:
+        for match in re.finditer(pattern, output, re.MULTILINE):
+            name = " ".join((match.group(1) or "").split()).rstrip(":")
+            if name:
+                matches.append((match.start(), name))
+    return list(dict.fromkeys(name for _, name in sorted(matches, key=lambda item: item[0])))

@@ -472,6 +472,17 @@ class MainCheck(MainChanges, Base):
         self.assertEqual(runs.busy_agents(self.conn), set())
         self.assertEqual(runs.counts_since(self.conn, "2000-01-01"), {})  # doesn't count as the agent's use
 
+    def test_custom_failure_names_for_red_main_and_retry_warning(self):
+        self.cfg['projects']['dd']['test_failure_patterns'] = [r'^BROKEN: (.+)$']
+        with mock.patch.object(mainhealth, '_verify', return_value=(False, 'BROKEN: custom case')):
+            self.cycle()
+        self.assertEqual(json.loads(self.health()['failing']), ['custom case'])
+        self.assertIn('custom case', self.alerts[-1][1])
+        self.advance_main()
+        with mock.patch.object(mainhealth, '_verify', side_effect=[(False, 'BROKEN: flaky case'), (True, 'OK')]):
+            self.cycle()
+        self.assertTrue(any('flaky case' in event['detail'] for event in self.events('warning')))
+
     def test_single_failure_that_passes_on_retry_only_warns(self):
         self.outcomes("fail:test_flaky", "pass")
         self.cycle()

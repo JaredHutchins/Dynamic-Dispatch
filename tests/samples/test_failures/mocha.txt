@@ -1,0 +1,6 @@
+  1 failing
+
+  1) cart
+       totals items:
+
+      AssertionError: expected 1 to equal 2

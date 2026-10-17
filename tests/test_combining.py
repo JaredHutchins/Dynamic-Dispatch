@@ -43,7 +43,8 @@ class CombineMain(Base):
         def check(*args):
             calls.append(1)
             if fail_tests and len(calls) == 2:
-                return False, "1 failed: test_both: incompatible value"
+                return False, (fail_tests if isinstance(fail_tests, str) else
+                               "1 failed: test_both: incompatible value")
             return real_verify(*args)
         with mock.patch.object(agents, "run", side_effect=agent), \
                 mock.patch.object(verify, "run_verify", side_effect=check):
@@ -283,6 +284,13 @@ class CombineMain(Base):
         self.assertIn("Combined this story with the latest main (Add main behaviour), and 1 "
                       "tests failed: test_both. "
                       "Sent back to Claude to fix (try 1 of 2).", board.comments[0][2])
+
+    def test_custom_failure_names_after_combining(self):
+        self.cfg['projects']['dd']['test_failure_patterns'] = [r'^BROKEN: (.+)$']
+        row, prompts = self.combine(fail_tests='BROKEN: custom combined test')
+        self.assertEqual(row['status'], runs.DONE, row)
+        self.assertIn('tests failed: custom combined test.', board.comments[0][2])
+        self.assertIn('BROKEN: custom combined test', prompts[1])
 
     def test_markers_left_twice_block_with_sections(self):
         row, prompts = self.combine(conflict=True, repair=False)

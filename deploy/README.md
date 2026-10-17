@@ -234,6 +234,28 @@ app installation, guided setup, project onboarding and doctor.
 
 ## Add a project
 
+Set `verify_timeout_seconds` in a project's config to a positive whole number
+of seconds, for example `"verify_timeout_seconds": 1800` for 30 minutes.
+It applies to each story verification (including after combining with main)
+and each main-check attempt. Leaving it out keeps the 900-second (15-minute)
+default. Preparation keeps its separate time limit.
+
+DD extracts failing test names from Python unittest and pytest, Jest, Vitest,
+Mocha, Go's `go test` and Rust's `cargo test`. To add another format, set
+`test_failure_patterns` to a list of Python regular expressions, each with
+exactly one capture group containing the test name. For example:
+
+```json
+"test_failure_patterns": ["^BROKEN: (.+)$"]
+```
+
+Patterns supplement the built-in formats and run with multiline matching
+(`^` and `$` match line boundaries) after terminal colour codes are removed.
+Escape backslashes for JSON. DD checks every pattern when loading config and
+refuses invalid expressions or capture groups, naming the project and entry.
+Names are deduplicated in output order. When no names match, DD still sends the
+test output back for repair as before.
+
 Projects may also set `test_env` (an object of environment names and string
 values), `test_env_file` (an absolute path to a private `KEY=VALUE` file), and
 `test_path` (a list of absolute tool directories). These are optional; leaving

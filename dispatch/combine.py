@@ -42,8 +42,8 @@ def _failure_count(output):
     return match.group(1) if match else "one or more"
 
 
-def _failure_names(output):
-    return "; ".join(verify.failing_tests(output)) or f"{_failure_count(output)} failing tests (names unavailable)"
+def _failure_names(output, project_cfg=None):
+    return "; ".join(verify.failing_tests(output, project_cfg)) or f"{_failure_count(output)} failing tests (names unavailable)"
 
 
 def with_main(ctx, issue, title, result):
@@ -92,7 +92,7 @@ def with_main(ctx, issue, title, result):
                 else:
                     message = (
                         f"Combined this story with the latest main ({meanwhile}), and {_failure_count(details)} "
-                        f"tests failed: {_failure_names(details)}. Sent back to {ctx.agent_cfg['display_name']} "
+                        f"tests failed: {_failure_names(details, ctx.project_cfg)}. Sent back to {ctx.agent_cfg['display_name']} "
                         f"to fix (try {attempt} of 2)."
                     )
                 try:
