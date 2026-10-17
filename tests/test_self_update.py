@@ -11,6 +11,8 @@ from dispatch import alerts, container, github, gitops, plane, publicupdate, run
 import main as dd_main
 from helpers import Base, GH, ORCH, S_REV, board, git
 
+ROOT = Path(__file__).resolve().parents[1]
+
 
 class SelfUpdate(Base):
     def setUp(self):
@@ -20,6 +22,13 @@ class SelfUpdate(Base):
         # Outside a container unless a test says otherwise, whatever runs the tests.
         self.enterContext(mock.patch.dict(os.environ))
         os.environ.pop(container.MARKER, None)
+        # Main carries the real deploy/FILES.md, as DD's own repository does.
+        seed = self.tmp / "seed"
+        (seed / "deploy").mkdir()
+        (seed / selfupdate.FILES_PAGE).write_text((ROOT / selfupdate.FILES_PAGE).read_text())
+        git("add", "-A", cwd=seed)
+        git("-c", "user.name=Seed", "-c", "user.email=s@x", "commit", "-q", "-m", "files", cwd=seed)
+        git("push", "-q", "origin", "main", cwd=seed)
         self.checkout = self.tmp / "dd"
         git("clone", str(self.origin), str(self.checkout), cwd=self.tmp)
         self.started = self.head()
@@ -57,10 +66,11 @@ class SelfUpdate(Base):
     def head(self):
         return git("rev-parse", "HEAD", cwd=self.checkout).strip()
 
-    def merge(self, files, title="Add self-update", message=None):
+    def merge(self, files, title="Add self-update", message=None, contents=None):
         """Merge a pull request touching these files into main, the way GitHub words it.
 
         With message, commit that instead, as a plain commit or a merge whose title isn't on GitHub.
+        contents gives some files their text; the rest get a heading.
         """
         number = len(self.pr_titles) + 7
         if message is None:
@@ -71,7 +81,7 @@ class SelfUpdate(Base):
         for name in files:
             path = seed / name
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(f"# {title}\n")
+            path.write_text((contents or {}).get(name, f"# {title}\n"))
         git("add", "-A", cwd=seed)
         git("-c", "user.name=Main", "-c", "user.email=m@x", "commit", "-q",
             "-m", message, cwd=seed)
@@ -534,22 +544,111 @@ class SelfUpdate(Base):
         self.assertIn("sudo systemctl restart dynamic-dispatch", message)
 
     def test_every_deploy_file_is_classified(self):
-        root = Path(__file__).resolve().parents[1]
         # Python caches bytecode beside deploy/dd-install when tests load it; that isn't a deploy file.
-        files = {str(p.relative_to(root)) for p in (root / "deploy").rglob("*")
+        files = {str(p.relative_to(ROOT)) for p in (ROOT / "deploy").rglob("*")
                  if p.is_file() and "__pycache__" not in p.parts}
-        self.assertEqual(files, set(selfupdate.DEPLOY_FILES))
-        self.assertEqual(set(selfupdate.DEPLOY_FILES.values()),
-                         {"installed", "checkout", "documentation", "image"})
+        listed = selfupdate.deploy_files((ROOT / selfupdate.FILES_PAGE).read_text())
+        self.assertEqual(files, set(listed))
+        self.assertEqual(set(listed.values()), set(selfupdate.CATEGORIES))
 
-    def test_a_deploy_file_this_copy_of_dd_does_not_know_still_holds_back(self):
+    def test_the_list_skips_rows_without_a_known_category(self):
+        listed = selfupdate.deploy_files("| File | Category |\n| --- | --- |\n| `deploy/a` | image |\n"
+                                         "| deploy/b | checkout |\n| `deploy/c` | maybe |\n"
+                                         "- **installed**: copied | out\n")
+        self.assertEqual(listed, {"deploy/a": "image", "deploy/b": "checkout"})
+
+    def listing(self, *rows):
+        """The real deploy/FILES.md with these rows added, as a merge adding files would leave it."""
+        page = (ROOT / selfupdate.FILES_PAGE).read_text()
+        return {selfupdate.FILES_PAGE: page + "".join(f"| `{name}` | {kind} |\n" for name, kind in rows)}
+
+    def test_a_new_deploy_file_listed_in_the_new_commit_updates_normally(self):
+        # The running copy has never heard of it; the commit being updated to says what it is.
+        target = self.merge([selfupdate.FILES_PAGE, "deploy/healthcheck", "deploy/helper"],
+                            contents=self.listing(("deploy/healthcheck", "image"), ("deploy/helper", "checkout")))
+        self.main_green(target)
+        self.assertFalse(self.cycle())
+        self.assertEqual(self.head(), target)
+        self.assertEqual(self.sent, [])
+        self.assertIsNone(runs.claim_self_update_restart(self.conn))
+
+    def test_a_new_deploy_file_listed_as_installed_is_held(self):
+        target = self.merge([selfupdate.FILES_PAGE, "deploy/dd-cleanup"],
+                            contents=self.listing(("deploy/dd-cleanup", "installed")))
+        self.main_green(target)
+        self.assertFalse(self.cycle())
+        self.assertEqual(self.head(), self.started)
+        [(_, message, _)] = self.sent
+        self.assertIn("it changes deploy/dd-cleanup, which must be installed.", message)
+        self.assertNotIn("doesn't list", message)
+        self.assertIn("2. sudo python3 deploy/dd-install --agents claude", message)
+
+    def test_the_list_is_read_from_the_commit_being_updated_to(self):
+        target = self.merge([selfupdate.FILES_PAGE], contents=self.listing(("deploy/later", "image")))
+        self.merge(["ARCHITECTURE.md"])  # main moves on; the earlier commit is still the one read
+        git("fetch", "-q", "origin", cwd=self.checkout)
+        page = gitops.read_commit_file(self.checkout, target, selfupdate.FILES_PAGE)
+        self.assertEqual(selfupdate.deploy_files(page)["deploy/later"], "image")
+        self.assertNotIn("deploy/later", gitops.read_commit_file(self.checkout, self.started,
+                                                                 selfupdate.FILES_PAGE))
+        self.assertIsNone(gitops.read_commit_file(self.checkout, target, "deploy/missing.md"))
+
+    def test_a_deploy_file_the_new_commit_does_not_list_still_holds_back(self):
         target = self.merge(["deploy/new.conf", "deploy/NOTES.md"])
         self.main_green(target)
         self.assertFalse(self.cycle())
         self.assertEqual(self.head(), self.started)
         [(_, message, _)] = self.sent
-        self.assertIn("it changes deploy/new.conf, which must be installed.", message)
+        self.assertIn("it changes deploy/new.conf, which must be installed. ", message)
+        self.assertIn("restart dynamic-dispatch\n\ndeploy/FILES.md at that commit doesn't list "
+                      "deploy/new.conf, so DD treats it as installed.", message)
         self.assertNotIn("NOTES.md", message)
+        self.assertIn("2. sudo python3 deploy/dd-install --agents claude", message)
+        self.assertEqual(len(self.events("self_update_refused")), 1)
+
+    def test_an_unreadable_list_holds_back_every_changed_deploy_file_but_markdown(self):
+        for how in ("garbled", "missing"):
+            with self.subTest(how=how):
+                selfupdate._waiting.update(target=None, idle=False)
+                self.sent.clear()
+                before = self.head()
+                target = self.merge([selfupdate.FILES_PAGE, "deploy/dd-install", "deploy/Dockerfile",
+                                     "deploy/CONTAINER.md"], f"Unreadable {how}",
+                                    contents={selfupdate.FILES_PAGE: "# Deploy files\n\nSee the wiki.\n"})
+                self.main_green(target)
+                with mock.patch.object(gitops, "read_commit_file",
+                                       side_effect=None if how == "garbled" else lambda *a: None,
+                                       wraps=gitops.read_commit_file):
+                    self.assertFalse(self.cycle())
+                self.assertEqual(self.head(), before)
+                [(_, message, level)] = self.sent
+                self.assertEqual(level, "active")
+                self.assertIn("it changes deploy/Dockerfile, deploy/dd-install, which must be installed.",
+                              message)
+                self.assertIn("DD couldn't read deploy/FILES.md at that commit, so it treats every changed "
+                              "deploy file but Markdown as installed.", message)
+                self.assertNotIn("CONTAINER.md", message)
+                self.assertIn("2. sudo python3 deploy/dd-install --agents claude", message)
+                git("reset", "-q", "--hard", target, cwd=self.checkout)  # the next round starts from here
+
+    def test_public_updates_read_the_list_from_the_new_commit_too(self):
+        listed = self.merge([selfupdate.FILES_PAGE, "deploy/healthcheck"],
+                            contents=self.listing(("deploy/healthcheck", "image")))
+        self.public_update(listed)
+        self.assertFalse(self.cycle())  # this mode restarts even without code, after an idle cycle
+        self.assertTrue(self.cycle())
+        self.assertEqual(self.head(), listed)
+        self.assertEqual(self.sent, [])
+
+    def test_public_updates_hold_back_an_unlisted_deploy_file(self):
+        target = self.merge(["deploy/new.conf"])
+        self.public_update(target)
+        for _ in range(2):
+            self.assertFalse(self.cycle())
+        self.assertEqual(self.head(), self.started)
+        [(project, message, _)] = self.sent
+        self.assertIsNone(project)
+        self.assertIn("doesn't list deploy/new.conf, so DD treats it as installed.", message)
 
     def test_container_image_files_update_without_holding_back(self):
         # A Pi never uses them, and a container keeps its image until someone rebuilds it.
@@ -613,7 +712,7 @@ class SelfUpdate(Base):
         self.assertIn("changes deploy/compose.yaml.", message)
 
     def test_the_rebuild_command_is_the_guides(self):
-        guide = (Path(__file__).resolve().parents[1] / "deploy" / "CONTAINER.md").read_text()
+        guide = (ROOT / "deploy" / "CONTAINER.md").read_text()
         self.assertIn(f"git pull\n{selfupdate.REBUILD}\n", guide)
         self.assertIn('dc() { docker compose -f deploy/compose.yaml', guide)
 
@@ -655,7 +754,8 @@ class SelfUpdate(Base):
                 self.raw = raw
                 return b"\xff" * (len(raw) + 16)
 
-        files = [name for name, kind in selfupdate.DEPLOY_FILES.items() if kind == "installed"]
+        listed = selfupdate.deploy_files((ROOT / selfupdate.FILES_PAGE).read_text())
+        files = [name for name, kind in listed.items() if kind == "installed"]
         update = {"project": "dd", "target": "a" * 40, "head": "b" * 40,
                   "title": "🦆" * selfupdate.TITLE_LIMIT}
         for account in ("dd-agent", "unknown" * 1000):
@@ -673,6 +773,26 @@ class SelfUpdate(Base):
                 self.assertEqual(json.loads(cipher.raw)["body"], message)
                 for name in files:
                     self.assertIn(name, message)
+
+    def test_why_files_count_as_installed_is_cut_before_the_steps(self):
+        class Cipher:
+            def encrypt(self, iv, raw, aad):
+                self.raw = raw
+                return b"\xff" * (len(raw) + 16)
+
+        files = [f"deploy/new-{n}.conf" for n in range(5)]
+        why = f"deploy/FILES.md at that commit doesn't list {', '.join(files)}, so DD treats them as installed."
+        update = {"project": "dd", "target": "e" * 40, "head": "b" * 40, "title": "🦆" * selfupdate.TITLE_LIMIT}
+        problem = selfupdate._install_steps(self.cfg, Path("/" + "🦆" * 1000), files, why)
+        selfupdate._refuse(self.cfg, self.conn, update, "deploy", problem)
+        message = self.sent[-1][1]
+        self.assertIn(why, self.events("self_update_refused")[-1])  # kept whole in the log
+        cipher = Cipher()
+        group = "dynamic-dispatch update"
+        alerts.encrypted_form(cipher, {"title": group, "body": message, "group": group,
+                                       "level": "active", "url": ""})
+        body = json.loads(cipher.raw)["body"]
+        self.assertIn("3. sudo systemctl restart dynamic-dispatch\n\ndeploy/FILES.md", body)
 
     def test_a_failed_fast_forward_is_retried_on_the_next_check(self):
         target = self.merge(["dispatch/worker.py"])

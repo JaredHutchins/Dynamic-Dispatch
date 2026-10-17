@@ -287,6 +287,13 @@ def read_base_file(repo, base_branch, relpath):
 
 
 @_serialized
+def read_commit_file(repo, revision, relpath):
+    """A file's contents at exactly this commit, or None if it isn't there or can't be read."""
+    result = _git(["show", f"{_commit_id(revision)}:{relpath}"], repo, check=False)
+    return result.stdout if result.returncode == 0 else None
+
+
+@_serialized
 def has_changes(repo, worktree):
     result = _in_worktree(repo, worktree, ["status", "--porcelain", "--untracked-files=all"])
     return bool(result.stdout.strip())
