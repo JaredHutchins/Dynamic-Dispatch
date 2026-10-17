@@ -22,7 +22,7 @@ from datetime import date, datetime, timezone
 import json
 import sqlite3
 
-from . import alerts, agents, assessments, choose, combine, config, docs_line, github, gitops, mainhealth, plane, prompts, rework, runs, sync, verify
+from . import alerts, agents, assessments, choose, combine, config, docs_line, github, gitops, mainhealth, plane, prepare, prompts, rework, runs, sync, verify
 from .redact import log, scrub, warn
 from .stories import story_ref
 
@@ -413,6 +413,8 @@ def _build(ctx, title, issue, rework_pr, saved, group):
             unfinished = gitops.unfinished_changes(ctx.repo, ctx.worktree, UNFINISHED_LIMIT)
         except gitops.GitError as e:
             return ctx.fail(f"Could not hand on the unfinished changes:\n\n{e}")
+        if not _prepare_checkout(ctx, issue, bool(unfinished or restored or ctx.pulled_out or rework_pr)):
+            return
         prompt = (prompts.build_prompt(ctx.project_cfg, issue) + rework.prompt(rework_pr)
                   + docs_line.instruction(config.docs(ctx.project_cfg), rework=bool(rework_pr)))
         if ctx.pulled_out:
@@ -457,6 +459,10 @@ def _build(ctx, title, issue, rework_pr, saved, group):
         return
 
     if not ctx.run["hold_data"]:
+        if not _prepare_checkout(ctx, issue, True):
+            return
+        if ctx.project_cfg.get("prepare_commands") and not _check_docs(ctx, issue, rework_pr):
+            return
         ctx.event("testing", "Running tests")
         ok, verify_output = verify.run_verify(ctx.cfg, ctx.project_cfg, ctx.agent_cfg, ctx.worktree)
         if mainhealth.hold(ctx.cfg, ctx.conn, ctx.run, ctx.worktree, ctx.result):
@@ -578,6 +584,8 @@ def execute(cfg, conn, run):
     ctx, project_id, title, group, issue, rework_pr, existing, saved = started
 
     if not _prepare(ctx, group, existing, saved):
+        return
+    if not ctx.needs_build and not _prepare_checkout(ctx, issue, True):
         return
     if not ctx.refresh and not _build(ctx, title, issue, rework_pr, saved, group):
         return
@@ -734,3 +742,55 @@ def execute_thread(cfg, run):
             runs.release_slot(conn, run["id"])
         finally:
             conn.close()
+
+
+def _prepare_checkout(ctx, issue, has_work):
+    """A bare checkout failure belongs to the environment; saved work can be repaired."""
+    if not ctx.project_cfg.get("prepare_commands"):
+        return True
+    attempt = runs.repair_attempts(ctx.conn, ctx.run["id"])
+    while True:
+        ok, output = prepare.run(ctx.cfg, ctx.project_cfg, ctx.agent_cfg, ctx.worktree)
+        if ok:
+            ctx.changed = gitops.has_changes(ctx.repo, ctx.worktree)
+            if ctx.changed:
+                ctx.resuming = ctx.retrying_pr = False
+            return True
+        ctx.event("prepare_failed", output)
+        if not has_work:
+            return ctx.fail("Environment preparation failed before the agent started; "
+                            "no agent work was attempted.\n\n" + output)
+        if attempt >= 2:
+            return ctx.fail("Preparation still failed after 2 repair tries:\n\n" + output)
+        message = f"Preparation failed; sent back to the agent (try {attempt + 1} of 2).\n\n{output}"
+        try:
+            sync.send_back(ctx.cfg, ctx.run, attempt + 1, message)
+        except plane.PlaneError as e:
+            ctx.event("warning", f"Could not post preparation repair comment: {e}")
+        ctx.event("sent_back", message)
+        runs.record_repair(ctx.conn, ctx.run["id"])
+        attempt += 1
+        # The repair's summary becomes the pull request description, so it must restate the earlier one.
+        earlier = scrub((ctx.result or {}).get("summary") or "")
+        prompt = (prompts.build_prompt(ctx.project_cfg, issue)
+                  + docs_line.instruction(config.docs(ctx.project_cfg))
+                  + "\nRepair checkout preparation:\n" + output
+                  + "\n\nFix the work so the preparation commands succeed. Do not run Git commands that "
+                    "change history: do not merge, rebase, reset, commit or push. The system running you "
+                    "handles Git. Your final message replaces your earlier summary as the pull request "
+                    "description, so give the complete summary again, ending with a correct Docs line.\n\n"
+                  + f"Your earlier summary:\n{earlier or '(none)'}\n")
+        ctx.event("agent_started", "Preparation repair started")
+        result = None
+        try:
+            result = agents.run(ctx.cfg, ctx.agent_cfg, prompt, ctx.worktree)
+        finally:
+            ctx.event("agent_finished", "Preparation repair finished" if result else "Repair stopped unexpectedly")
+        runs.record_usage(ctx.conn, ctx.run["id"], ctx.run["agent"], result.get("usage"),
+                          result.get("cost_usd"), additive=True)
+        if result.get("usage_limit"):
+            return ctx.limited(result)
+        if not result["ok"]:
+            return ctx.fail("Preparation repair did not complete:\n" + str(result.get("error")))
+        ctx.result = result
+        ctx.changed = gitops.has_changes(ctx.repo, ctx.worktree)

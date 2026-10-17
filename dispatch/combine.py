@@ -12,7 +12,7 @@ so a test that replaces one there sees every call.
 import re
 import sqlite3
 
-from . import agents, choose, github, gitops, mainhealth, plane, prompts, runs, sync, verify
+from . import agents, choose, github, gitops, mainhealth, plane, prepare, prompts, runs, sync, verify
 from .redact import log, scrub
 from .stories import story_ref
 
@@ -71,7 +71,7 @@ def with_main(ctx, issue, title, result):
             while True:
                 if not clash:
                     ctx.event("testing", "Running tests after combining with main")
-                    ok, details = verify.run_verify(ctx.cfg, ctx.project_cfg, ctx.agent_cfg, ctx.worktree)
+                    ok, details = prepared_verify(ctx)
                     if ok:
                         break
                 if mainhealth.hold(ctx.cfg, ctx.conn, ctx.run, ctx.worktree, result):
@@ -153,13 +153,31 @@ def with_main(ctx, issue, title, result):
             ctx.event("combined_cleanly", combined_note)
         else:
             ctx.event("main_current", "Story already contains latest main")
-            if ctx.refresh or ctx.run["hold_data"]:
-                ctx.event("testing", "Re-testing saved combination before upload")
-                ok, details = verify.run_verify(ctx.cfg, ctx.project_cfg, ctx.agent_cfg, ctx.worktree)
-                if mainhealth.hold(ctx.cfg, ctx.conn, ctx.run, ctx.worktree, result):
-                    return
-                if not ok:
-                    return ctx.fail(f"Verification of saved combination failed:\n\n{details}")
+            if (ctx.refresh or ctx.run["hold_data"]) and not _verify_saved(ctx, title, result):
+                return
     except (gitops.GitError, plane.PlaneError) as e:
         return ctx.fail(f"Could not combine with latest main:\n\n{e}")
     return meanwhile, combined_note
+
+
+def prepared_verify(ctx):
+    """Prepare the combined checkout before its test gate."""
+    ok, output = prepare.run(ctx.cfg, ctx.project_cfg, ctx.agent_cfg, ctx.worktree)
+    if not ok:
+        return False, output
+    return verify.run_verify(ctx.cfg, ctx.project_cfg, ctx.agent_cfg, ctx.worktree)
+
+
+def _verify_saved(ctx, title, result):
+    # Startup already prepared this folder; no new combination changed its inputs.
+    ctx.event("testing", "Re-testing saved combination before upload")
+    ok, details = verify.run_verify(ctx.cfg, ctx.project_cfg, ctx.agent_cfg, ctx.worktree)
+    if mainhealth.hold(ctx.cfg, ctx.conn, ctx.run, ctx.worktree, result):
+        return
+    if not ok:
+        return ctx.fail(f"Verification of saved combination failed:\n\n{details}")
+    if ctx.project_cfg.get("prepare_commands") and gitops.has_changes(ctx.repo, ctx.worktree):
+        gitops.commit_all(ctx.repo, ctx.worktree, scrub(f"Prepare saved work: {title}"),
+                          ctx.agent_cfg["git_author"])
+        runs.mark_committed(ctx.conn, ctx.run["id"])
+    return True

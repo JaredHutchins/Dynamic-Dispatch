@@ -205,6 +205,9 @@ def run(path=None):
         settings = _settings(cfg, saved, repo, command, enabled, docs, project, states, labels, branch)
         stage = 'cloning code; check the code directory, Git filters and saved push login'
         gitops.clone_project(settings['repo_path'], url)
+        offered = saved.get('prepare_commands', suggest_prepare(settings['repo_path']))
+        if offered:
+            settings['prepare_commands'] = _prepare_answers(offered)
         if saved == settings:
             print('Project is already saved in config. Running doctor for this project.')
         else:
@@ -229,3 +232,32 @@ def run(path=None):
         # API bodies, config errors, paths and subprocess output may contain credentials.
         print('Setup stopped while ' + stage + '. Run --add-project again to resume.')
     return 1
+
+
+def suggest_prepare(folder):
+    """Inspect filenames only; suggestions never execute repository code."""
+    folder = Path(folder)
+    commands = []
+    for filename, command in (
+            ('pnpm-lock.yaml', ['pnpm', 'install', '--frozen-lockfile']),
+            ('yarn.lock', ['yarn', 'install', '--frozen-lockfile']),
+            ('package-lock.json', ['npm', 'ci'])):
+        if (folder / filename).is_file():
+            commands.append(command)
+            break
+    for filename, command in (('go.mod', ['go', 'mod', 'download']),
+                              ('Cargo.toml', ['cargo', 'fetch'])):
+        if (folder / filename).is_file():
+            commands.append(command)
+    return commands
+
+
+def _prepare_answers(offered):
+    commands = []
+    for command in offered:
+        answer = input(f"Prepare command [{shlex.join(command)}] "
+                       "(Enter confirms, type arguments to edit, 'skip' omits): ").strip()
+        if answer.lower() == 'skip':
+            continue
+        commands.append(shlex.split(answer) if answer else command)
+    return commands
