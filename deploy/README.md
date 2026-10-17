@@ -479,11 +479,17 @@ waits for its main check to pass on exactly main's latest commit. Then:
   changes they follow the normal update and restart path above.
 - If a deploy file that is copied out of the checkout to be installed
   changed, DD doesn't update, even alongside code or document changes.
-  `DEPLOY_FILES` in `dispatch/selfupdate.py` is the one list of which deploy
-  files are installed; a test fails if a file in `deploy/` isn't in it. A
-  new non-Markdown deploy file that the running DD doesn't know yet also
-  holds it back, to be safe. DD sends one alert with sound
-  naming the installed files that changed and giving three steps:
+  [FILES.md](FILES.md) is the one list of how each deploy file is handled
+  (installed, run from the checkout, used only by the container image, or
+  documentation). DD reads it from the commit it is updating to, not from
+  its own running copy, so a merge that adds a deploy file and lists it is
+  handled by that listing. When you add a file under `deploy/`, add it to
+  that table in the same pull request; a test fails if one is missing. A
+  changed non-Markdown deploy file the new commit's list doesn't name, or
+  every changed one if DD can't read the list, counts as installed and holds
+  the update back, to be safe; the alert ends by saying so. DD sends one
+  alert with sound naming the installed files that changed and giving three
+  steps:
 
       cd "$DD_CHECKOUT" && git pull
       sudo python3 deploy/dd-install --agents <agents>
