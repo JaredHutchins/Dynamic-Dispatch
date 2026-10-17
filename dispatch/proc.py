@@ -7,14 +7,15 @@ user cannot read config.json or any of DD's credentials.
 
 Before and after every sandboxed call, every process the sandbox user owns is
 killed ("reaped"), so nothing the agent left running in the background
-survives into DD's next step or the next run. That relies on one
-run at a time; concurrent runs will need a user or cgroup per run.
+survives into DD's next step or the next run. A project's helper programs
+(see services.py) are therefore started inside the call they serve. That
+relies on one run at a time; concurrent runs will need a user or cgroup per run.
 """
 
 import subprocess
 import threading
 
-from . import redact
+from . import redact, services
 
 
 DEFAULT_OUTPUT_LIMIT = 2 * 1024 * 1024  # bytes kept from each end of a stream
@@ -76,12 +77,13 @@ def _feed(stream, text):
 
 
 class Result:
-    def __init__(self, returncode, stdout, stderr, timed_out, stdout_truncated):
+    def __init__(self, returncode, stdout, stderr, timed_out, stdout_truncated, helpers_failed=False):
         self.returncode = returncode
         self.stdout = stdout
         self.stderr = stderr
         self.timed_out = timed_out
         self.stdout_truncated = stdout_truncated
+        self.helpers_failed = helpers_failed  # a helper didn't start, so the command never ran
 
 
 def run_capped(command, cwd=None, timeout=None, limit=DEFAULT_OUTPUT_LIMIT, env=None, input_text=None):
@@ -155,11 +157,13 @@ def reap(cfg, run_as=None):
 
 
 def run_sandboxed(cfg, command, cwd, timeout, run_as=None, env_file=None,
-                  limit=DEFAULT_OUTPUT_LIMIT, input_text=None, project_cfg=None):
+                  limit=DEFAULT_OUTPUT_LIMIT, input_text=None, project_cfg=None, helpers=False):
     """Run a command as the sandbox user, with no process of that user alive before or after.
 
     If either reap fails, the result is a failure: before, the sandbox isn't
-    working; after, something may still be changing the worktree.
+    working; after, something may still be changing the worktree. With
+    helpers, the project's helper programs run around the command; if one
+    fails to start, the result is a failure that never started, with its output.
     """
     try:
         redact.add_test_secrets(project_cfg or {})
@@ -168,15 +172,20 @@ def run_sandboxed(cfg, command, cwd, timeout, run_as=None, env_file=None,
     problem = reap(cfg, run_as)
     if problem:
         return _refused(f"Could not clear the sandbox user's processes before starting: {problem}")
-    try:
-        result = run_capped(
-            sandboxed(cfg, command, cwd, timeout, run_as=run_as, env_file=env_file, project_cfg=project_cfg),
-            timeout=int(timeout) + BACKSTOP_GRACE_SECONDS,
-            limit=limit,
-            input_text=input_text,
-        )
-    finally:
-        problem = reap(cfg, run_as)
+    project = (project_cfg or {}) if helpers else {}
+    with services.around(project, command, run_as or cfg["sandbox"]["user"], timeout) as (command, marker):
+        limit_seconds = services.time_limit(project, timeout)
+        try:
+            result = run_capped(
+                sandboxed(cfg, command, cwd, limit_seconds, run_as=run_as, env_file=env_file, project_cfg=project_cfg),
+                timeout=int(limit_seconds) + BACKSTOP_GRACE_SECONDS,
+                limit=limit,
+                input_text=input_text,
+            )
+        finally:
+            problem = reap(cfg, run_as)
+        if marker is not None and marker.exists():
+            result = Result(None, result.stdout, result.stderr.strip(), False, False, helpers_failed=True)
     if problem:
         return _refused(f"Could not clear the sandbox user's processes after the run: {problem}")
     return result

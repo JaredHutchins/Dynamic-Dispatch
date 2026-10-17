@@ -439,6 +439,9 @@ def _build(ctx, title, issue, rework_pr, saved, group):
         ctx.result = result
         if result.get("usage_limit"):
             return ctx.limited(result)
+        if result.get("helpers_failed"):
+            return ctx.fail("A helper program failed to start before the agent started; "
+                            "no agent work was attempted.\n\n" + result["error"])
         if not result["ok"]:
             return ctx.fail(f"{ctx.agent_cfg['display_name']} did not complete the story:\n\n{result.get('error')}")
 

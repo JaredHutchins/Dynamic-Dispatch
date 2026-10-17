@@ -16,7 +16,7 @@ import tempfile
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from . import redact, testenv
+from . import redact, services, testenv
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
 
@@ -196,6 +196,11 @@ def load(path=None, *, allow_empty_projects=False):
             testenv.validate(project)
         except ValueError as error:
             raise ConfigError(str(error)) from None
+    for name, project in cfg["projects"].items():
+        try:
+            services.validate(project)
+        except ValueError as error:
+            raise ConfigError(f"project '{name}': {error}") from None
     _check_prepare(cfg)
     _check_verify(cfg)
     _check_cycles(cfg)
