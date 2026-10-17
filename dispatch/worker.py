@@ -770,9 +770,16 @@ def _prepare_checkout(ctx, issue, has_work):
         ctx.event("sent_back", message)
         runs.record_repair(ctx.conn, ctx.run["id"])
         attempt += 1
+        # The repair's summary becomes the pull request description, so it must restate the earlier one.
+        earlier = scrub((ctx.result or {}).get("summary") or "")
         prompt = (prompts.build_prompt(ctx.project_cfg, issue)
                   + docs_line.instruction(config.docs(ctx.project_cfg))
-                  + "\nRepair checkout preparation:\n" + output)
+                  + "\nRepair checkout preparation:\n" + output
+                  + "\n\nFix the work so the preparation commands succeed. Do not run Git commands that "
+                    "change history: do not merge, rebase, reset, commit or push. The system running you "
+                    "handles Git. Your final message replaces your earlier summary as the pull request "
+                    "description, so give the complete summary again, ending with a correct Docs line.\n\n"
+                  + f"Your earlier summary:\n{earlier or '(none)'}\n")
         ctx.event("agent_started", "Preparation repair started")
         result = None
         try:

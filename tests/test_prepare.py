@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest import mock
 
 from dispatch import add_project, agents, combine, config, doctor, mainhealth, plane, prepare, proc, runs
-from helpers import Base, MainChanges, board, S_BLK
+from helpers import Base, MainChanges, board, prs, S_BLK
 
 
 class PrepareCommands(unittest.TestCase):
@@ -147,6 +147,32 @@ class PrepareLifecycle(MainChanges, Base):
         self.assertIn('changed manifest failed', agent.call_args.args[2])
         self.assertTrue(any(e['type'] == 'sent_back' for e in runs.events(self.conn, run_id=self.run_rows()[0]['id'])))
         self.assertEqual(self.run_rows()[0]['status'], runs.DONE)
+
+    def test_repair_after_agent_keeps_full_summary_and_git_rule(self):
+        self.add_issue()
+        original = agents.run
+        prompts = []
+        full = "Added VALUE and fixed the manifest.\n\nDocs: none needed, because the fake change has nothing to document."
+        def agent(*args):
+            prompts.append(args[2])
+            result = original(*args)
+            if len(prompts) == 2:
+                result = {**result, 'summary': full}
+            return result
+        with mock.patch.object(prepare, 'run', side_effect=[
+                (True, ''), (False, 'changed manifest failed'), (True, '')]), \
+                mock.patch.object(agents, 'run', side_effect=agent):
+            self.cycle()
+        self.assertEqual(len(prompts), 2)
+        repair = prompts[1]
+        self.assertIn('do not merge, rebase, reset, commit or push', repair)
+        self.assertIn('The system running you handles Git', repair)
+        self.assertIn('replaces your earlier summary as the pull request description', repair)
+        self.assertIn('Your earlier summary:\nChanged things', repair)
+        self.assertNotIn('Your earlier summary:\n(none)', repair)
+        self.assertEqual(self.run_rows()[0]['status'], runs.DONE)
+        body = next(iter(prs.values()))['body']
+        self.assertTrue(body.startswith(full))
 
     def test_rebuilt_refresh_prepares_before_combining(self):
         self.add_issue()
