@@ -1,0 +1,3 @@
+FAIL: test_total (test_cart.CartTests.test_total)
+----------------------------------------------------------------------
+AssertionError: 1 != 2

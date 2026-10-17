@@ -25,6 +25,24 @@ class Config(unittest.TestCase):
         c["github"]["private_key_path"] = str(key)
         return c
 
+    def test_verify_settings_validated_on_load(self):
+        cfg = self.base()
+        name, project = next(iter(cfg['projects'].items()))
+        project.update(verify_timeout_seconds=1800, test_failure_patterns=[r'^BROKEN: (.+)$'])
+        loaded = config.load(self.write(cfg))['projects'][name]
+        self.assertEqual(loaded['verify_timeout_seconds'], 1800)
+        self.assertEqual(loaded['test_failure_patterns'], project['test_failure_patterns'])
+        for value in (0, -1, True, 1.5, '900', None):
+            project['verify_timeout_seconds'] = value
+            with self.subTest(value=value), self.assertRaisesRegex(config.ConfigError, 'verify_timeout_seconds'):
+                config.load(self.write(cfg))
+        project.pop('verify_timeout_seconds')
+        for value in (None, 'pattern', [1], [''], ['['], ['no group'], ['(two)(groups)']):
+            project['test_failure_patterns'] = value
+            with self.subTest(value=value), self.assertRaisesRegex(config.ConfigError, 'test_failure_patterns') as error:
+                config.load(self.write(cfg))
+            self.assertIn(name, str(error.exception))
+
     def test_project_test_settings(self):
         cfg = self.base()
         project = next(iter(cfg['projects'].values()))

@@ -197,10 +197,32 @@ def load(path=None, *, allow_empty_projects=False):
         except ValueError as error:
             raise ConfigError(str(error)) from None
     _check_prepare(cfg)
+    _check_verify(cfg)
     _check_cycles(cfg)
     _check_docs(cfg)
     cooldown_minutes(cfg)
     return cfg
+
+
+def _check_verify(cfg):
+    for name, project in cfg["projects"].items():
+        where = f"project '{name}'"
+        timeout = project.get("verify_timeout_seconds", 900)
+        if type(timeout) is not int or timeout < 1:
+            raise ConfigError(f"{where} verify_timeout_seconds must be a positive whole number")
+        patterns = project.get("test_failure_patterns", [])
+        if not isinstance(patterns, list):
+            raise ConfigError(f"{where} test_failure_patterns must be a list of regular expressions")
+        for index, pattern in enumerate(patterns, 1):
+            label = f"{where} test_failure_patterns entry {index}"
+            if not isinstance(pattern, str) or not pattern.strip():
+                raise ConfigError(f"{label} must be a non-empty regular expression")
+            try:
+                compiled = re.compile(pattern, re.MULTILINE)
+            except re.error as error:
+                raise ConfigError(f"{label} is invalid: {error}") from None
+            if compiled.groups != 1:
+                raise ConfigError(f"{label} must have exactly one capture group for the test name")
 
 
 def _check_prepare(cfg):

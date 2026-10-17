@@ -1,0 +1,8 @@
+running 2 tests
+test tests::total ... FAILED
+test tests::empty ... ok
+
+failures:
+    tests::total
+
+test result: FAILED. 1 passed; 1 failed;

@@ -69,6 +69,13 @@ support for them is planned.
 
 ## How it works
 
+Projects can set `verify_timeout_seconds` to a positive whole number for story
+tests and main checks (default 900 seconds, or 15 minutes). DD recognises failure
+names from unittest, pytest, Jest, Vitest, Mocha, Go and Rust. Optional
+`test_failure_patterns` add regular expressions for other frameworks; invalid
+patterns stop config loading. Unrecognised failures still include test output.
+See [Add a project](deploy/README.md#add-a-project) for the pattern format.
+
 Projects can set `test_env` string settings, a private `test_env_file`, and
 ordered `test_path` tool directories for prepare commands, tests, main checks
 and agent runs. `HOME` is protected; change `PATH` only through `test_path`.

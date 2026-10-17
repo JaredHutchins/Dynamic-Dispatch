@@ -1,0 +1,3 @@
+ FAIL  tests/cart.test.ts > cart > totals items
+AssertionError: expected 1 to be 2
+ Test Files  1 failed (1)

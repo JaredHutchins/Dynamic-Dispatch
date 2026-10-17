@@ -1,0 +1,6 @@
+FAIL tests/cart.test.js
+  ● cart › totals items
+
+    expect(received).toBe(expected)
+
+Test Suites: 1 failed, 1 total

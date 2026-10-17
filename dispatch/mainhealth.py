@@ -143,12 +143,12 @@ def execute(cfg, conn, run):
         health = runs.main_health(conn, project)
         if ok:
             if failures:
-                names = "; ".join(verify.failing_tests(failures[0])) or "names unavailable"
+                names = "; ".join(verify.failing_tests(failures[0], project_cfg)) or "names unavailable"
                 event("warning", f"Main's tests failed once at {revision[:12]}, then passed: {names}")
             _passed(conn, project, revision, health)
         else:
             _failed(cfg, conn, project_cfg, project, revision, health,
-                    verify.failing_tests(failures[-1]), event, failures[-1])
+                    verify.failing_tests(failures[-1], project_cfg), event, failures[-1])
     try:
         runs.main_check_result(conn, project)
         announce_availability(cfg, conn, project)
@@ -171,12 +171,13 @@ def _verify(cfg, project_cfg, agent_cfg, folder):
     ok, output = prepare.run(cfg, project_cfg, agent_cfg, folder)
     if not ok:
         raise NotTested(output)
-    result = proc.run_sandboxed(cfg, project_cfg["verify_command"], cwd=folder, timeout=verify.VERIFY_TIMEOUT,
+    timeout = project_cfg.get("verify_timeout_seconds", verify.VERIFY_TIMEOUT)
+    result = proc.run_sandboxed(cfg, project_cfg["verify_command"], cwd=folder, timeout=timeout,
                                 project_cfg=project_cfg, run_as=agent_cfg.get("run_as"))
     if result.returncode is None and not result.timed_out:
         raise NotTested(result.stderr)
     if result.timed_out or result.returncode != 0:
-        return False, proc.describe_failure(result, verify.VERIFY_TIMEOUT)
+        return False, proc.describe_failure(result, timeout)
     return True, (result.stdout + result.stderr).strip() or "(no output)"
 
 
