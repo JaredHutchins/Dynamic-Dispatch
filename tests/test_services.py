@@ -1,6 +1,7 @@
 """Helper programs: started around each sandboxed run that needs them, and stopped after."""
 
 import concurrent.futures
+import contextlib
 import getpass
 import json
 import os
@@ -47,6 +48,17 @@ def gone(pid):
         os.kill(pid, 0)
     except ProcessLookupError:
         return True
+    return False
+
+
+def running(token):
+    """Whether any process has token in its command line."""
+    for entry in Path('/proc').iterdir():
+        try:
+            if token in (entry / 'cmdline').read_bytes().decode(errors='replace'):
+                return True
+        except OSError:
+            continue
     return False
 
 
@@ -139,6 +151,29 @@ class Runs(unittest.TestCase):
                 self.assertIn(expected, result.stderr)
         self.assertIn('no room on disk', self.run_tests({'services': [helper(self.log, command=crash)]}).stderr)
         self.assertFalse(self.log.exists())
+
+    def test_missing_ready_program_is_a_startup_failure(self):
+        markers = []
+        real_around = services.around
+        @contextlib.contextmanager
+        def around(*args):
+            with real_around(*args) as (command, marker):
+                markers.append(marker)
+                yield command, marker
+                self.assertTrue(marker.exists())  # the runner marked it a start-up failure
+                self.assertFalse(marker.with_name('db').exists())  # and removed the helper's data
+        agent = {'parser': 'claude_json', 'command': [PY, '-c', TESTS, str(self.log)], 'display_name': 'Builder'}
+        project = {'services': [helper(self.log, ['/no/such/probe'])]}
+        with mock.patch.object(services, 'around', around):
+            result = agents.run(CFG, agent, 'prompt', self.folder, project)
+        self.assertFalse(result['ok'])
+        self.assertTrue(result['helpers_failed'])
+        self.assertIn('Builder never started: Helper program db could not run its ready check', result['error'])
+        self.assertIn('/no/such/probe', result['error'])
+        self.assertNotIn('tests', self.log.read_text() if self.log.exists() else '')
+        self.assertFalse(running(str(self.log)))  # the started helper was stopped
+        self.assertFalse(markers[0].parent.exists())
+        self.assertEqual(services.PORTS, set())
 
     def test_a_failing_test_is_not_a_helper_failure(self):
         result = self.run_tests({'services': [helper(self.log)]}, 'raise SystemExit(125)')
@@ -278,6 +313,26 @@ class Lifecycle(MainChanges, Base):
         self.assertEqual(plane.state_id(board.issues[row['issue_id']]), S_BLK)
         self.assertIn('A helper program failed to start before the agent started; no agent work', row['error'])
         self.assertIn('Its output:\nstarting', row['error'])
+
+    def test_missing_ready_program_blocks_as_an_environment_problem(self):
+        log = temporary_directory(self) / 'log'
+        self.cfg['projects']['dd']['services'] = [helper(log, ['/no/such/probe'])]
+        self.add_issue()
+        real = proc.run_sandboxed
+        def sandbox(cfg, command, **kwargs):
+            if not kwargs['helpers']:
+                return real(cfg, command, **kwargs)
+            with mock.patch.object(proc, 'run_capped', side_effect=unsandboxed):
+                return real_run_sandboxed(CFG, command, **kwargs)
+        with mock.patch.object(proc, 'run_sandboxed', side_effect=sandbox):
+            self.cycle()
+        row = self.run_rows()[0]
+        self.assertEqual(row['status'], runs.FAILED)
+        self.assertEqual(plane.state_id(board.issues[row['issue_id']]), S_BLK)
+        self.assertIn('A helper program failed to start before the agent started; no agent work', row['error'])
+        self.assertIn('Helper program db could not run its ready check', row['error'])
+        self.assertIn('/no/such/probe', row['error'])
+        self.assertFalse(running(str(log)))
 
     def test_failure_after_the_agents_changes_fails_the_tests(self):
         self.add_issue()

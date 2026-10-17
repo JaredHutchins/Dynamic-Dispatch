@@ -78,8 +78,13 @@ def start(helper, env, children):
         if child.poll() is not None:
             problem = f"exited with code {child.returncode} before it was ready"
             break
-        if ready(helper, env, deadline) and child.poll() is None:
-            return None
+        try:
+            if ready(helper, env, deadline) and child.poll() is None:
+                return None
+        except OSError as error:
+            # A missing ready program never becomes ready, so waiting longer won't help.
+            problem = f"could not run its ready check: {error}"
+            break
         if time.monotonic() >= deadline:
             problem = f"was not ready within {helper['timeout_seconds']}s"
             break
