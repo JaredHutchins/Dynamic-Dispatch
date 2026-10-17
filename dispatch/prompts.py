@@ -55,8 +55,11 @@ def assessment_prompt(snapshot):
            if 'reasons' in snapshot.keys() and snapshot['reasons'] else '')
         + 'Return exactly one fenced json block with this fixed format: '
         '{"stories":[{"id":"story ID","size":"S","risk":"low","reason":"risk reason",'
-        '"depends_on":[],"overlaps":[],"confidence":"high"}],"build_order":[],"push":[]}. '
+        '"depends_on":[],"overlaps":[],"confidence":"high","scope_problems":[]}],"build_order":[],"push":[]}. '
         "Include every story exactly once. Size is S, M or L; risk and confidence are low, medium or high. "
+        "For each story, scope_problems lists missing scope or contradictions as non-empty text; "
+        "use an empty list when none are found. For example, flag a required file excluded by In scope "
+        "or acceptance criteria that cannot both be met. "
         "Give a non-empty risk reason. depends_on and overlaps contain only other Cycle story IDs, "
         "without duplicates. Overlaps means the same files would be changed, so those stories must not "
         "run at the same time. build_order contains every story ID once in your recommended order. "

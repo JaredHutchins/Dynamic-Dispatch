@@ -781,6 +781,13 @@ writes them once, remembered across restarts, and sends one silent alert that
 they are ready. A refused Plane update records a warning and is retried later.
 Cycles that had already ended when DD gained this get no notes.
 
+The plan starts with "Scope problems: fix these before approving", listing
+scope gaps and contradictions with the story and the agent that raised each
+one. If none were found, it says "Scope problems: none found." The plan-ready
+alert counts these entries; a problem raised by both agents counts twice.
+These findings do not block approval. Fix the story, then reply
+`@Orchestrator reject: <what you fixed>` so DD re-assesses the Cycle.
+
 To switch it off again, remove the project's `cycles` section and restart.
 
 ## Adding a new setting

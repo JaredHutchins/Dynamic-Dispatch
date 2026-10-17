@@ -127,7 +127,8 @@ def post_report(conn, client, name, project, plan, cfg):
     if not items or not all(item["answer"] for item in items):
         return
     saved = runs.plan_report(conn, snapshot["id"]) or make_report(conn, name, snapshot, items, cfg)
-    loops = bool(json.loads(saved["merged"])["merged"]["loops"])
+    merged = json.loads(saved["merged"])["merged"]
+    loops = bool(merged["loops"])
     current = client.get_issue(project_id, plan['issue_id'])
     expected = saved['report'][:plane.COMMENT_LIMIT] + (
         '\n[... truncated ...]' if len(saved['report']) > plane.COMMENT_LIMIT else '')
@@ -137,7 +138,8 @@ def post_report(conn, client, name, project, plan, cfg):
     if not client.has_comment_with(project_id, plan["issue_id"], marker):
         client.comment(project_id, plan["issue_id"], sync.plan_question(loops),
                        marker=f"{question_marker(cycle_id)} {marker}")
-    alerts.send(cfg, name, plan["issue_id"], sync.plan_ready_alert(loops), suffix=" plan ready", level="active",
+    message = sync.plan_ready_alert(loops, len(plan_report.scope_problems(merged)))
+    alerts.send(cfg, name, plan["issue_id"], message, suffix=" plan ready", level="active",
                 url=plane.work_item_url(cfg, project_id, plan["issue_id"]))
     runs.set_plan_status(conn, name, cycle_id, runs.PLAN_PLANNED)
     runs.record_event(conn, None, "cycle_plan", f"Posted the plan for round {snapshot['round']}",

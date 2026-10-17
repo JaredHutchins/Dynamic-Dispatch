@@ -80,7 +80,7 @@ def validate(text, stories):
     seen = []
     for index, row in enumerate(rows):
         prefix = f'stories[{index}]'
-        fields = {'id', 'size', 'risk', 'reason', 'depends_on', 'overlaps', 'confidence'}
+        fields = {'id', 'size', 'risk', 'reason', 'depends_on', 'overlaps', 'confidence', 'scope_problems'}
         if not isinstance(row, dict) or set(row) != fields:
             problems.append(f'{prefix} must have exactly {", ".join(sorted(fields))}.')
             continue
@@ -91,6 +91,9 @@ def validate(text, stories):
                 problems.append(f'{prefix}.{field} must be one of {", ".join(allowed)}.')
         if not isinstance(row['reason'], str) or not row['reason'].strip():
             problems.append(f'{prefix}.reason must be non-empty text.')
+        if (not isinstance(row['scope_problems'], list)
+                or any(not isinstance(x, str) or not x.strip() for x in row['scope_problems'])):
+            problems.append(f'{prefix}.scope_problems must be a list of non-empty text.')
         for field in ('depends_on', 'overlaps'):
             values = row[field]
             if (not isinstance(values, list) or any(not isinstance(x, str) or x not in ids or x == row['id']
