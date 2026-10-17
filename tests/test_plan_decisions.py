@@ -179,7 +179,7 @@ class Decisions(Board):
             self.assertNotIn('private answer', prompts.assessment_prompt(data))
             runs.finish_assessment(self.conn, item['run_id'], answer={
                 'stories': [{'id': 'i', 'size': 'S', 'risk': 'low', 'reason': 'private answer',
-                             'depends_on': [], 'overlaps': [], 'confidence': 'high'}],
+                             'depends_on': [], 'overlaps': [], 'confidence': 'high', 'scope_problems': []}],
                 'build_order': ['i'], 'push': []})
         with mock.patch.object(plans.alerts, 'send'), mock.patch.object(plans.plane, 'work_item_url', return_value='url'):
             self.poll()

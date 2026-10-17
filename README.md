@@ -142,6 +142,13 @@ A Cycle ends early once all its stories are Done or Cancelled and main has
 passed its tests. A Cancelled story never releases the stories that depend on
 it; they are carried over instead.
 
+The plan starts with "Scope problems: fix these before approving", listing
+scope gaps and contradictions with the story and the agent that raised each
+one. If none were found, it says "Scope problems: none found." The plan-ready
+alert counts these entries; a problem raised by both agents counts twice.
+These findings do not block approval. Fix the story, then reply
+`@Orchestrator reject: <what you fixed>` so DD re-assesses the Cycle.
+
 Sprint-pull is off unless you turn it on for a project.
 
 ## Keeping work safe

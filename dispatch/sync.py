@@ -376,9 +376,10 @@ def plan_question(loops):
             " Reply '@Orchestrator approve', or '@Orchestrator reject: <your reasons>'.")
 
 
-def plan_ready_alert(loops):
-    return ("The plan is ready, and a dependency loop needs your decision." if loops
-            else "The plan is ready. OK to begin as scoped?")
+def plan_ready_alert(loops, scope_count=0):
+    noun = "problem" if scope_count == 1 else "problems"
+    return (f"Plan ready: {scope_count} scope {noun}. " +
+            ("A dependency loop needs your decision." if loops else "OK to begin as scoped?"))
 
 
 PLAN_HAS_LOOPS = ("The plan can't be approved while a dependency loop remains (listed at the top of the plan). "

@@ -16,7 +16,7 @@ HOUR = 3600
 
 def story(sid, size='M', risk='low', depends_on=(), overlaps=()):
     return {'id': sid, 'size': size, 'risk': risk, 'reason': f'{sid} reason', 'depends_on': list(depends_on),
-            'overlaps': list(overlaps), 'confidence': 'high'}
+            'overlaps': list(overlaps), 'confidence': 'high', 'scope_problems': []}
 
 
 def answer(rows, order, push=()):
@@ -69,7 +69,7 @@ class Merge(unittest.TestCase):
         self.assertEqual(sorted(merged['order']), ['a', 'b', 'c'])
         self.assertEqual(merged['order'][-1], 'c')
         text = plan_report.render(merged, {'based_on': 0}, {'alpha': 'Alpha', 'beta': 'Beta'}, 1)
-        self.assertEqual(text.split('\n')[2], 'Needs your decision')
+        self.assertEqual(text.split('\n')[4], 'Needs your decision')
         self.assertIn('A needs B (Alpha); B needs A (Beta)', text)
         self.assertIn("can't be approved while a loop remains", text)
 
@@ -182,11 +182,13 @@ class Report(unittest.TestCase):
         runs.queue_assessments(self.conn, snapshot['id'])
         return snapshot
 
-    def answer_all(self, snapshot, loop=False):
+    def answer_all(self, snapshot, loop=False, flagged=()):
         ids = [s['id'] for s in json.loads(snapshot['stories'])]
         for row in runs.assessments(self.conn, snapshot['id']):
             rows = [story(sid, depends_on=['b'] if loop and sid == 'a' and row['agent'] == 'alpha' else
                           ['a'] if loop and sid == 'b' and row['agent'] == 'beta' else []) for sid in ids]
+            if row['agent'] in flagged:
+                rows[0]['scope_problems'] = ['Required file is outside scope.']
             runs.finish_assessment(self.conn, row['run_id'], answer=answer(rows, ids))
 
     def post(self):
@@ -219,6 +221,37 @@ class Report(unittest.TestCase):
         self.alerts.assert_called_once()
         self.assertEqual(self.alerts.call_args.kwargs['url'], 'https://plane.example/ws/projects/project/issues/plan')
         self.assertEqual(self.alerts.call_args.kwargs['level'], 'active')
+
+    def test_scope_problems_report_alert_and_approval(self):
+        for flagged in ((), ('alpha',), ('alpha', 'beta')):
+            with self.subTest(flagged=flagged):
+                snapshot = self.round()
+                self.answer_all(snapshot, flagged=flagged)
+                self.post()
+                report = runs.plan_report(self.conn, snapshot['id'])['report']
+                count = len(flagged)
+                if count:
+                    self.assertEqual(report.splitlines()[2], 'Scope problems: fix these before approving')
+                    self.assertEqual(report.count('Required file is outside scope.'), count)
+                    for agent in flagged:
+                        self.assertIn(f'- A (a) — {agent.title()}: Required file is outside scope.', report)
+                else:
+                    self.assertEqual(report.splitlines()[2], 'Scope problems: none found.')
+                self.assertLess(report.index('Scope problems:'), report.index('Fit'))
+                self.assertLess(report.index('Scope problems:'), report.index('Build order'))
+                noun = 'problem' if count == 1 else 'problems'
+                self.assertEqual(self.alerts.call_args.args[3],
+                                 f'Plan ready: {count} scope {noun}. OK to begin as scoped?')
+                record = plans.judge(self.conn, self.client, 'p', self.project,
+                                     runs.cycle_plan(self.conn, 'p', 'cycle'), f'approve-{count}',
+                                     'approve', {}, {})
+                self.assertIsNone(record['reply'])
+                with self.conn:
+                    self.conn.execute("INSERT OR IGNORE INTO assessment_requests VALUES ('p', 'cycle')")
+
+    def test_scope_count_keeps_dependency_loop_alert(self):
+        self.assertEqual(sync.plan_ready_alert(True, 2),
+                         'Plan ready: 2 scope problems. A dependency loop needs your decision.')
 
     def answer_round(self, loop=False):
         snapshot = self.round()

@@ -30,6 +30,7 @@ def merge(stories, answers):
         overlapping |= {x for a in agents for x in ids if sid in rows[a][x]['overlaps']}
         merged[sid] = {
             'name': story['name'],
+            'scope_problems': {a: rows[a][sid].get('scope_problems', []) for a in agents},
             'depends_on': [x for x in ids if any(x in rows[a][sid]['depends_on'] for a in agents)],
             'depends_by': {a: [x for x in ids if x in rows[a][sid]['depends_on']] for a in agents},
             'overlaps': [x for x in ids if x in overlapping],
@@ -250,9 +251,23 @@ def disagreement_line(merged, sid, kind, names):
     return f"- {story['name']}: wanted pushed ({who})."
 
 
+def scope_problems(merged):
+    """Keep each agent's findings, including separate reports of the same problem."""
+    return [(sid, agent, problem) for sid, story in merged['stories'].items()
+            for agent, problems in story.get('scope_problems', {}).items() for problem in problems]
+
+
 def render(merged, est, names, round_number):
     """The plain-text report for the plan item's description; names maps agents to display names."""
     lines = [f"Plan for this Cycle (assessment round {round_number})", ""]
+    problems = scope_problems(merged)
+    if problems:
+        lines += ["Scope problems: fix these before approving", ""]
+        lines += [f"- {merged['stories'][sid]['name']} ({sid}) — {names.get(agent, agent)}: {problem}"
+                  for sid, agent, problem in problems]
+        lines += [""]
+    else:
+        lines += ["Scope problems: none found.", ""]
     if merged['loops']:
         lines += ["Needs your decision", ""]
         for loop in merged['loops']:

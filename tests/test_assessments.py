@@ -43,7 +43,7 @@ class Assessments(unittest.TestCase):
 
     def answer(self):
         return {'stories': [{'id': story['id'], 'size': 'M', 'risk': 'low', 'reason': 'Small surface',
-                             'depends_on': [], 'overlaps': [], 'confidence': 'high'} for story in self.stories],
+                             'depends_on': [], 'overlaps': [], 'confidence': 'high', 'scope_problems': []} for story in self.stories],
                 'build_order': ['one', 'two'], 'push': []}
 
     def fenced(self, answer=None):
@@ -160,12 +160,16 @@ class Assessments(unittest.TestCase):
         other = runs.assessment_for_run(self.conn, runs.assessments(self.conn, snapshot['id'])[1]['run_id'])
         self.assertEqual(prompts.assessment_prompt(other), before)
         self.assertNotIn('UNIQUE PEER ANSWER', before)
-        for text in ('2099-01-01', 'build_order', 'confidence', 'overlaps', 'push', 'reason', 'S, M or L'):
+        for text in ('2099-01-01', 'build_order', 'confidence', 'scope_problems', 'overlaps', 'push', 'reason', 'S, M or L'):
             self.assertIn(text, before)
 
     def test_validation(self):
         self.assertEqual(assessments.validate(self.fenced(), self.stories)[1], [])
-        changes = [lambda a: a['stories'].pop(),
+        changes = [lambda a: a['stories'][0].pop('scope_problems'),
+                   lambda a: a['stories'][0].update(scope_problems='missing file'),
+                   lambda a: a['stories'][0].update(scope_problems=[' ']),
+                   lambda a: a['stories'][0].update(scope_problems=[None]),
+                   lambda a: a['stories'].pop(),
                    lambda a: a['stories'].append(copy.deepcopy(a['stories'][0])),
                    lambda a: a['stories'][0].update(size='XL'),
                    lambda a: a['stories'][0].update(risk='severe'),
@@ -193,6 +197,23 @@ class Assessments(unittest.TestCase):
             assessments.ask(self.cfg, self.conn, run, snapshot, Path(self.temp.name))
         self.assertEqual(agent.call_count, 2)
         self.assertIn('Return exactly one fenced json block.', agent.call_args.args[2])
+        self.assertIsNotNone(runs.assessment_for_run(self.conn, run['id'])['answer'])
+
+    def test_missing_scope_problems_is_sent_back(self):
+        self.start()
+        run = runs.claim_next(self.conn)
+        snapshot = runs.assessment_for_run(self.conn, run['id'])
+        invalid = self.answer()
+        del invalid['stories'][0]['scope_problems']
+        valid = self.answer()
+        valid['stories'][0]['scope_problems'] = ['Required file is outside scope.']
+        with patch('dispatch.assessments.agents.run', side_effect=[
+                {'ok': True, 'summary': self.fenced(invalid)},
+                {'ok': True, 'summary': self.fenced(valid)}]) as agent:
+            assessments.ask(self.cfg, self.conn, run, snapshot, Path(self.temp.name))
+        self.assertEqual(agent.call_count, 2)
+        correction = agent.call_args.args[2].split('Correct these exact problems:')[1]
+        self.assertIn('scope_problems', correction)
         self.assertIsNotNone(runs.assessment_for_run(self.conn, run['id'])['answer'])
 
     def test_fail_twice_notify_once_then_assess_retries(self):
@@ -353,7 +374,7 @@ class AssessmentCheckout(helpers.Base):
     def valid(self):
         return {'ok': True, 'summary': '```json\n' + json.dumps({
             'stories': [{'id': 'one', 'size': 'S', 'risk': 'low', 'reason': 'Small change',
-                         'depends_on': [], 'overlaps': [], 'confidence': 'high'}],
+                         'depends_on': [], 'overlaps': [], 'confidence': 'high', 'scope_problems': []}],
             'build_order': ['one'], 'push': []}) + '\n```'}
 
     def test_pinned_read_only_checkout_discards_changes_and_records_warning(self):
