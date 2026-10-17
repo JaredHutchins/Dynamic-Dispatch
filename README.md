@@ -91,6 +91,13 @@ agent's sandbox and network access; `prepare_timeout_seconds` defaults to 900
 seconds per command. Fresh-checkout failures block as environment problems;
 failures after agent changes go back for repair. See [project setup](deploy/README.md#add-a-project).
 
+Projects whose tests need a helper program running, such as a test database,
+can list it under `services`. DD starts it in the sandbox before every test run,
+main check and agent run, gives each run its own port and data folder as
+`DD_SERVICE_<NAME>_PORT` and `DD_SERVICE_<NAME>_DATA_DIR`, and stops it
+afterwards. Helpers never use Docker. See [project setup](deploy/README.md#add-a-project)
+for the setting and the other ways tests can get a helper.
+
 
 1. **Write a story.** Each story follows [STORY_TEMPLATE.md](STORY_TEMPLATE.md):
    a user story, acceptance criteria, and what is in and out of scope.

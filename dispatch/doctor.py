@@ -10,7 +10,7 @@ import sys
 import http.client
 from urllib.parse import urlsplit
 
-from . import config, container, doctor_sandbox, github, gitops, plane, proc, runs, testenv
+from . import config, container, doctor_sandbox, github, gitops, plane, proc, runs, services, testenv
 from .redact import MIN_SECRET_LENGTH
 
 MIN_PYTHON = (3, 11)
@@ -164,6 +164,7 @@ def run(path=None, *, project=None):
           'Test secret files have valid settings and restricted access.',
           'Check test_env_file permissions and settings; only root, DD and project agents may read it.')
     _check_prepare(cfg, check, require)
+    _check_helpers(cfg, check, require)
     _check_git(cfg, check, report)
     accounts = _check_agents(cfg, check, report, require)
     doctor_sandbox.check(cfg, accounts, CHECKOUT, path or config.DEFAULT_CONFIG_PATH, report)
@@ -460,3 +461,18 @@ def _check_prepare(cfg, check, require):
                   lambda: require(shutil.which(program, path=testenv.path(project))),
                   "Prepare program is available on the launcher's PATH or at its configured path.",
                   "Prepare program is missing; install it on the sandbox PATH or check its configured path.")
+
+
+def _check_helpers(cfg, check, require):
+    for index, project in enumerate(cfg['projects'].values(), 1):
+        programs = services.programs(project)
+        if programs:
+            # The runner that starts and stops the helpers inside the sandbox.
+            programs.insert(0, services.PYTHON)
+        for number, program in enumerate(programs):
+            if '/' in program and not Path(program).is_absolute():
+                program = str(Path(project['repo_path']) / program)
+            check(f'Project {index} helper program {number}' if number else f'Project {index} helper runner',
+                  lambda: require(shutil.which(program, path=testenv.path(project))),
+                  "Helper program is available on the launcher's PATH or at its configured path.",
+                  "Helper program is missing; install it on the sandbox PATH or check its configured path.")

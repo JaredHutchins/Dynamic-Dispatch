@@ -306,6 +306,66 @@ nothing. If several JavaScript lockfiles exist, pnpm takes precedence, then
 Yarn, then npm. Doctor checks each prepare program on the sandbox PATH.
 Language runtimes must already be installed.
 
+Some tests need a helper program running, such as a database or cache. There
+are four ways to give them one:
+
+- **The tests bring their own**, for example an in-memory database or a fake
+  started by the test code. Nothing is needed.
+- **One already running elsewhere**, on this machine or another. Give its
+  address through `test_env` (and any password through `test_env_file`).
+- **Started by DD**, with the `services` setting below.
+- **Started through Docker by the tests themselves.** DD's sandbox doesn't
+  allow this: the agent's account has no access to Docker, and giving it access
+  would give it control of the machine. Run those containers beside DD instead,
+  and give their address through `test_env` as above.
+
+Set `services` to a list of helpers for DD to start before every test run (story
+tests, tests after combining with main, and main checks) and before every agent
+run, so the agent can run the tests itself. Preparation runs without them. Each
+helper has:
+
+- `name`: letters, digits and underscores, starting with a letter. It names the
+  settings below, in capitals.
+- `command`: the argument list that starts it and keeps running in the foreground.
+- `ready`: how DD knows it's ready. Either `"port"`, meaning its port accepts
+  connections, or an argument list that succeeds once it's ready.
+- `timeout_seconds` (optional): how long it may take to be ready; default 60.
+
+For example:
+
+```json
+"services": [
+  {"name": "redis",
+   "command": ["redis-server", "--bind", "127.0.0.1", "--port", "${DD_SERVICE_REDIS_PORT}",
+               "--dir", "${DD_SERVICE_REDIS_DATA_DIR}"],
+   "ready": "port",
+   "timeout_seconds": 30}
+]
+```
+
+Each run gets its own free port for each helper, as `DD_SERVICE_<NAME>_PORT`,
+and its own empty data folder, as `DD_SERVICE_<NAME>_DATA_DIR`. Both are set
+for the helper, its ready check, the tests and the agent, and `${...}` in
+`command` and `ready` is replaced with their values; nothing else is expanded
+and no shell is used. A helper must listen on the port it's given, on
+127.0.0.1. Runs by different agents at the same time never get the same port.
+The data folder is removed when the run ends. A helper whose data needs
+setting up first, such as PostgreSQL's `initdb`, can be started by a small
+script in the repository that does both and then runs the helper; use a ready
+command such as `["pg_isready", "-h", "127.0.0.1", "-p", "${DD_SERVICE_POSTGRES_PORT}"]`
+for it. A path containing `/` that isn't absolute is relative to the checkout.
+
+Helpers run inside the sandbox as the agent's account, never through Docker,
+and are stopped when the run ends; DD's clean-up of the agent's processes
+after every run makes sure nothing is left behind. They use
+`/usr/bin/python3` to start and stop them. If a helper fails to start or isn't
+ready in time, the run fails with the helper's output. Before the agent has
+started, the story is blocked as an environment problem. After the agent's
+changes, it counts as failing tests. In a main check it's reported as main not
+being tested, not as main being broken. Doctor checks `/usr/bin/python3` and
+each helper's start and ready programs on the sandbox PATH. DD doesn't install
+helper programs; install them yourself.
+
 
 From DD's checkout on the Pi, as DD's account, run:
 
