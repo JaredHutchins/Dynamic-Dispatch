@@ -234,6 +234,36 @@ app installation, guided setup, project onboarding and doctor.
 
 ## Add a project
 
+Projects may also set `test_env` (an object of environment names and string
+values), `test_env_file` (an absolute path to a private `KEY=VALUE` file), and
+`test_path` (a list of absolute tool directories). These are optional; leaving
+them out preserves the existing environment. They apply to prepare commands,
+verification, main checks and the agent itself. Directories in `test_path` come
+first, in list order, followed by `/usr/local/bin:/usr/bin:/bin`. Neither plain
+nor secret settings may set `HOME` or `PATH`.
+
+For example, use `"test_env": {"APP_MODE": "test"}` and
+`"test_path": ["/opt/project-tools/bin"]`. Keep secret values out of config:
+point `test_env_file` at a separate file outside the repository. Its lines are
+literal `KEY=VALUE`, without shell quoting or expansion; blank lines and lines
+starting with `#` are ignored. Each name may appear only once in the file.
+Secret settings take precedence over plain ones.
+The agent's model `env_file` remains separate, is loaded only for agent runs,
+and takes precedence if a name overlaps.
+
+**Agents can read these values. Use test-only secrets, never production secrets.**
+Each value must be at least 8 characters; startup and doctor reject shorter
+values, naming the setting but never its value. Non-secret settings belong in
+`test_env`. DD scrubs secret values from stored output, logs and posts. If the
+file later becomes unreadable, sandboxed commands fail without running. Give
+the file to root or DD, with mode 640 and a dedicated group containing only DD
+and this project's agent accounts so the launcher can read it. DD and the agents also need traversal access to its parent directories.
+Do not use ACLs or symlinks for the file. DD refuses startup if the file's
+owner, group or permissions expose it to unrelated accounts, or its contents
+are invalid. Doctor checks the same rules and that every tool directory exists.
+After upgrading, reinstall `deploy/dd-agent-run` as described under
+"When a deploy file changes" so the launcher understands these settings.
+
 Each project may set `prepare_commands` to an ordered list of argument lists,
 for example `[["npm", "ci"], ["npm", "run", "generate"]]`, and
 `prepare_timeout_seconds` to a positive whole number (default 900 seconds per

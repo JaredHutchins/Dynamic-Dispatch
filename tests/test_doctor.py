@@ -55,6 +55,20 @@ class Doctor(unittest.TestCase):
         self.host()
         self.fake_host()
 
+    def test_short_test_secret_reports_setting_without_value(self):
+        project = next(iter(self.cfg['projects'].values()))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'test.env'
+            path.write_text('PRIVATE=xyz\n')
+            project['test_env_file'] = str(path)
+            with mock.patch.object(doctor.testenv, 'check_file'):
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    self.assertEqual(doctor.run(), 1)
+        self.assertIn('test_env_file setting PRIVATE must be at least 8 characters', output.getvalue())
+        self.assertIn('non-secret settings belong in test_env', output.getvalue())
+        self.assertNotIn('xyz', output.getvalue())
+
     def host(self):
         """A host where DD's service, launcher, sudo rule and agent are all set up."""
         self.me = pwd.getpwuid(os.geteuid()).pw_name

@@ -30,7 +30,7 @@ class CombineMain(Base):
         self.add_issue()
         original = agents.run
         prompts = []
-        def agent(cfg, agent_cfg, prompt, worktree):
+        def agent(cfg, agent_cfg, prompt, worktree, project_cfg=None):
             prompts.append(prompt)
             if len(prompts) > 1:
                 self.set_mode("repair" if repair else "garbage")

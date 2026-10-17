@@ -16,7 +16,7 @@ def run_verify(cfg, project_cfg, agent_cfg, worktree):
     if not command:
         return True, "(no verify command configured)"
     result = proc.run_sandboxed(
-        cfg, command, cwd=worktree, timeout=VERIFY_TIMEOUT, run_as=agent_cfg.get("run_as")
+        cfg, command, cwd=worktree, timeout=VERIFY_TIMEOUT, project_cfg=project_cfg, run_as=agent_cfg.get("run_as")
     )
     if result.timed_out or result.returncode != 0:
         return False, proc.describe_failure(result, VERIFY_TIMEOUT)

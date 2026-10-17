@@ -69,6 +69,15 @@ support for them is planned.
 
 ## How it works
 
+Projects can set `test_env` string settings, a private `test_env_file`, and
+ordered `test_path` tool directories for prepare commands, tests, main checks
+and agent runs. `HOME` is protected; change `PATH` only through `test_path`.
+Agents can read these secrets: use test-only values, never production secrets.
+Secret values must be at least 8 characters; put non-secret settings in `test_env`.
+DD checks file permissions at startup and scrubs the secret values from output;
+doctor also checks the extra tool directories. Model logins remain separate.
+See [Add a project](deploy/README.md#add-a-project) for format and permissions.
+
 Projects can configure ordered `prepare_commands` argument lists to install
 dependencies or generate code before agents and tests run. Preparation uses the
 agent's sandbox and network access; `prepare_timeout_seconds` defaults to 900

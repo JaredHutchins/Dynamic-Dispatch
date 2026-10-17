@@ -1,5 +1,7 @@
 """Tests for redaction."""
 
+import contextlib
+import io
 import json, os
 from dispatch import redact
 from helpers import (
@@ -16,6 +18,26 @@ from helpers import (
 
 
 class Redaction(Base):
+    def test_project_secrets_never_leave(self):
+        secret = 'fake-project-test-value'
+        path = self.tmp / 'test.env'
+        path.write_text('TEST_PRIVATE=' + secret + '\n')
+        path.chmod(0o600)
+        project = self.cfg['projects']['dd']
+        project['test_env_file'] = str(path)
+        redact.add_test_secrets(project)
+        os.environ['LEAK'] = secret + ' xyz'
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            redact.log(secret + ' xyz')
+            self.add_issue()
+            self.cycle()
+        everything = (json.dumps([c[2] for c in board.comments]) + json.dumps(prs)
+                      + json.dumps(self.run_rows()) + output.getvalue())
+        self.assertNotIn(secret, everything)
+        self.assertIn('xyz', everything)
+        self.assertIn('[redacted]', board.comments[0][2])
+
     def test_secrets_never_leave(self):
         os.environ["LEAK"] = f"{GH} and {MODEL}"
         self.add_issue(); self.cycle()
@@ -48,4 +70,3 @@ class SecondReview(Base):
         self.assertEqual(row["issue_name"], "Rotate [redacted] please")
         subject = git("log", "-1", "--format=%s", "dd-7", cwd=self.origin)
         self.assertNotIn(GH, subject); self.assertIn("[redacted]", subject)
-

@@ -25,6 +25,29 @@ class Config(unittest.TestCase):
         c["github"]["private_key_path"] = str(key)
         return c
 
+    def test_project_test_settings(self):
+        cfg = self.base()
+        project = next(iter(cfg['projects'].values()))
+        project.update(test_env={'APP_MODE': 'test'}, test_path=['/opt/tools/bin'],
+                       test_env_file='/etc/dynamic-dispatch/project-tests.env')
+        loaded = config.load(self.write(cfg))
+        self.assertEqual(next(iter(loaded['projects'].values()))['test_env'], {'APP_MODE': 'test'})
+        for key in ('HOME', 'PATH'):
+            project['test_env'] = {key: '/opt/other'}
+            with self.subTest(key=key), self.assertRaises(config.ConfigError):
+                config.load(self.write(cfg))
+
+    def test_short_test_secret_refused_at_startup(self):
+        path = temporary_directory(self) / 'test.env'
+        cfg = {'projects': {'p': {'test_env_file': str(path), 'agents': []}}}
+        for value in ('test', '1', '', '1234567'):
+            path.write_text('PRIVATE=' + value + '\n')
+            path.chmod(0o600)
+            with self.subTest(length=len(value)), self.assertRaises(config.ConfigError) as caught:
+                config.check_env_files(cfg | {'agents': {}})
+            self.assertEqual(str(caught.exception), 'test_env_file setting PRIVATE must be at least 8 '
+                             'characters; non-secret settings belong in test_env')
+
     def test_public_self_update_setting(self):
         c = self.base()
         c["self_update_public_repo"] = "owner/repo"
@@ -398,4 +421,3 @@ class GroupConfig(unittest.TestCase):
                 mock.patch.object(config.os, 'getgroups', return_value=[]), \
                 mock.patch.object(sys, 'argv', ['main.py', '--once']):
             self.assertEqual(dd_main.main(), 1)
-

@@ -325,7 +325,7 @@ def _hit_limit(parser, result):
         return False
 
 
-def run(cfg, agent_cfg, prompt, worktree):
+def run(cfg, agent_cfg, prompt, worktree, project_cfg=None):
     """Run an agent to completion. Never raises on agent failure - returns ok=False."""
     parser = PARSERS.get(agent_cfg.get("parser"))
     if parser is None:
@@ -339,6 +339,7 @@ def run(cfg, agent_cfg, prompt, worktree):
         timeout=timeout,
         run_as=agent_cfg.get("run_as"),
         env_file=agent_cfg.get("env_file"),
+        project_cfg=project_cfg,
         input_text=prompt if agent_cfg.get("prompt_via", "argument") == "stdin" else None,
     )
 

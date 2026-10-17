@@ -7,7 +7,7 @@
 #   sudo -n -u dd-agent /usr/local/bin/dd-agent-run --reap
 #
 # What it guarantees:
-#   - an empty environment, plus basics and the agent's own env file only
+#   - an empty environment, plus basics, project tests and an optional model login
 #   - the working directory must be inside the worktree root
 #   - a group-writable umask, so the orchestrator can commit and clean up
 #   - the time limit is enforced here, as this user, because the orchestrator
@@ -68,7 +68,7 @@ fi
 WORKTREE_ROOT="/srv/dynamic-dispatch/worktrees"
 
 usage() {
-    echo "usage: dd-agent-run --cwd DIR --timeout SECONDS [--env-file FILE] -- COMMAND [ARGS...]" >&2
+    echo "usage: dd-agent-run --cwd DIR --timeout SECONDS [--env-file FILE] [--test-env KEY=VALUE] [--test-env-file FILE] [--test-path DIR] -- COMMAND [ARGS...]" >&2
     echo "       dd-agent-run --reap" >&2
     exit 64
 }
@@ -76,10 +76,16 @@ usage() {
 cwd=""
 limit=""
 env_file=""
+test_env_file=""
+test_vars=()
+test_dirs=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --cwd)      [[ $# -ge 2 ]] || usage; cwd="$2"; shift 2 ;;
         --timeout)  [[ $# -ge 2 ]] || usage; limit="$2"; shift 2 ;;
+        --test-env) [[ $# -ge 2 ]] || usage; test_vars+=("$2"); shift 2 ;;
+        --test-env-file) [[ $# -ge 2 ]] || usage; test_env_file="$2"; shift 2 ;;
+        --test-path) [[ $# -ge 2 && "$2" == /* && "$2" != *:* ]] || usage; test_dirs+=("$2"); shift 2 ;;
         --env-file) [[ $# -ge 2 ]] || usage; env_file="$2"; shift 2 ;;
         --)         shift; break ;;
         *)          usage ;;
@@ -108,6 +114,25 @@ env_vars=(
     "GIT_TERMINAL_PROMPT=0"
 )
 
+# Project values are literal, and cannot change the sandbox home or replace PATH.
+if [[ -n "$test_env_file" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ -z "$line" || "$line" == \#* ]] && continue
+        test_vars+=("$line")
+    done < "$test_env_file"
+fi
+for line in "${test_vars[@]}"; do
+    [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*= && "$line" != HOME=* && "$line" != PATH=* ]] || {
+        echo "dd-agent-run: invalid test setting; HOME and PATH are reserved" >&2; exit 64;
+    }
+    env_vars+=("$line")
+done
+tool_path="/usr/local/bin:/usr/bin:/bin"
+for ((i=${#test_dirs[@]}-1; i>=0; i--)); do
+    tool_path="${test_dirs[i]}:$tool_path"
+done
+env_vars+=("PATH=$tool_path")
+
 # KEY=VALUE lines, no quotes. Read, never sourced.
 if [[ -n "$env_file" ]]; then
     while IFS= read -r line || [[ -n "$line" ]]; do
@@ -122,4 +147,4 @@ fi
 
 umask 0002
 cd -- "$real_cwd"
-exec env -i "${env_vars[@]}" timeout --kill-after=30 "$limit" "$@"
+exec /usr/bin/env -i "${env_vars[@]}" /usr/bin/timeout --kill-after=30 "$limit" "$@"

@@ -1,4 +1,4 @@
-"""Read-only setup checks. Never include config values or exception text in output."""
+"""Read-only setup checks. Only explicitly safe validation errors may be shown; never include secret values."""
 
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,12 +10,12 @@ import sys
 import http.client
 from urllib.parse import urlsplit
 
-from . import config, container, doctor_sandbox, github, gitops, plane, proc, runs
+from . import config, container, doctor_sandbox, github, gitops, plane, proc, runs, testenv
 from .redact import MIN_SECRET_LENGTH
 
 MIN_PYTHON = (3, 11)
 CHECKOUT = Path(__file__).resolve().parent.parent
-# The launcher runs agents with only this PATH, so their commands must be on it.
+# Base launcher PATH; project tool directories also apply to prepare commands.
 AGENT_PATH = '/usr/local/bin:/usr/bin:/bin'
 SERVICE = 'dynamic-dispatch.service'
 ROLLBACK_SERVICE = 'dynamic-dispatch-rollback.service'
@@ -112,6 +112,9 @@ def run(path=None, *, project=None):
             return None
         try:
             value = action()
+        except testenv.ShortSecretError as error:
+            report('FAIL', name, str(error))
+            return None
         except Exception as error:
             report('FAIL', name, service_reason(error, service, credential, bad) if service else bad)
             return None
@@ -157,6 +160,9 @@ def run(path=None, *, project=None):
 
     _check_plane(cfg, check, require)
     _check_github(cfg, check, report, require)
+    check('Project test secrets', lambda: config.check_test_env_files(cfg),
+          'Test secret files have valid settings and restricted access.',
+          'Check test_env_file permissions and settings; only root, DD and project agents may read it.')
     _check_prepare(cfg, check, require)
     _check_git(cfg, check, report)
     accounts = _check_agents(cfg, check, report, require)
@@ -443,11 +449,14 @@ def _check_installed(cfg, accounts, check, require):
 
 def _check_prepare(cfg, check, require):
     for index, project in enumerate(cfg['projects'].values(), 1):
+        for number, directory in enumerate(project.get('test_path', []), 1):
+            check(f'Project {index} tool directory {number}', lambda: require(Path(directory).is_dir()),
+                  'Tool directory exists.', 'Tool directory is missing; install it or correct test_path.')
         for number, command in enumerate(project.get('prepare_commands', []), 1):
             program = command[0]
             if '/' in program and not Path(program).is_absolute():
                 program = str(Path(project['repo_path']) / program)
             check(f'Project {index} prepare command {number}',
-                  lambda: require(shutil.which(program, path=AGENT_PATH)),
+                  lambda: require(shutil.which(program, path=testenv.path(project))),
                   "Prepare program is available on the launcher's PATH or at its configured path.",
                   "Prepare program is missing; install it on the sandbox PATH or check its configured path.")

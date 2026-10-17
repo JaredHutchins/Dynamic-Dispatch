@@ -21,7 +21,7 @@ class PrepareCommands(unittest.TestCase):
         with mock.patch.object(proc, 'run_sandboxed', return_value=proc.Result(0, '', '', False, False)) as run:
             self.assertEqual(prepare.run({}, project, {'run_as': 'builder'}, '/checkout'), (True, ''))
         self.assertEqual(run.call_args_list, [
-            mock.call({}, c, cwd='/checkout', timeout=42, run_as='builder') for c in commands])
+            mock.call({}, c, cwd='/checkout', timeout=42, project_cfg=project, run_as='builder') for c in commands])
 
     def test_failure_and_timeout_stop_sequence_with_output(self):
         for result in (proc.Result(1, 'install output', 'install error', False, False),
@@ -119,9 +119,9 @@ class PrepareLifecycle(MainChanges, Base):
         self.add_issue()
         real_agent = agents.run
         calls = []
-        def agent(*args):
+        def agent(*args, **kwargs):
             calls.append('agent')
-            result = real_agent(*args)
+            result = real_agent(*args, **kwargs)
             self.advance_main()
             return result
         real_sandbox = proc.run_sandboxed
@@ -153,7 +153,7 @@ class PrepareLifecycle(MainChanges, Base):
         original = agents.run
         prompts = []
         full = "Added VALUE and fixed the manifest.\n\nDocs: none needed, because the fake change has nothing to document."
-        def agent(*args):
+        def agent(*args, **kwargs):
             prompts.append(args[2])
             result = original(*args)
             if len(prompts) == 2:
@@ -200,7 +200,7 @@ class PrepareLifecycle(MainChanges, Base):
         self.add_issue()
         original = agents.run
         prompts = []
-        def agent(*args):
+        def agent(*args, **kwargs):
             prompts.append(args[2])
             result = original(*args)
             if len(prompts) == 1:

@@ -364,7 +364,7 @@ class AssessmentCheckout(helpers.Base):
                     'commit', '-m', 'later', cwd=self.repo)
         seen = []
 
-        def agent(cfg, agent_cfg, prompt, folder):
+        def agent(cfg, agent_cfg, prompt, folder, project_cfg=None):
             seen.append(folder)
             self.assertEqual(helpers.git('rev-parse', 'HEAD', cwd=folder).strip(), snapshot['revision'])
             self.assertFalse((folder / 'later.txt').exists())
@@ -406,7 +406,7 @@ class AssessmentCheckout(helpers.Base):
         run = runs.claim_next(self.conn)
         seen = []
 
-        def agent(cfg, agent_cfg, prompt, folder):
+        def agent(cfg, agent_cfg, prompt, folder, project_cfg=None):
             seen.append(folder.parent)
             (folder.parent / 'keep.txt').write_text('unexpected file')
             return self.valid()
@@ -457,7 +457,7 @@ class AssessmentCheckout(helpers.Base):
         runs.queue_assessments(self.conn, snapshot['id'])
         retry = runs.claim_next(self.conn)
 
-        def fresh(cfg, agent_cfg, prompt, folder):
+        def fresh(cfg, agent_cfg, prompt, folder, project_cfg=None):
             self.assertEqual((folder / 'app.py').read_text(), "print('hi')\n")
             return self.valid()
 

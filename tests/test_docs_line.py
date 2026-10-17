@@ -132,7 +132,7 @@ class Agent:
         self.answers = list(answers)
         self.prompts = []
 
-    def __call__(self, cfg, agent_cfg, prompt, worktree):
+    def __call__(self, cfg, agent_cfg, prompt, worktree, project_cfg=None):
         self.prompts.append(prompt)
         files, summary = self.answers.pop(0) if len(self.answers) > 1 else self.answers[0]
         for name in files:

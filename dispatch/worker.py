@@ -432,7 +432,7 @@ def _build(ctx, title, issue, rework_pr, saved, group):
         runs.record_usage(ctx.conn, ctx.run["id"], ctx.run["agent"])
         result = None
         try:
-            result = agents.run(ctx.cfg, ctx.agent_cfg, prompt, ctx.worktree)
+            result = agents.run(ctx.cfg, ctx.agent_cfg, prompt, ctx.worktree, project_cfg=ctx.project_cfg)
         finally:
             ctx.event("agent_finished", "Agent finished" if result else "Agent stopped unexpectedly")
         runs.record_usage(ctx.conn, ctx.run["id"], ctx.run["agent"], result.get("usage"), result.get("cost_usd"))
@@ -518,7 +518,7 @@ def _check_docs(ctx, issue, rework_pr):
         ctx.event("agent_started", f"Docs line fix started: {name}")
         result = None
         try:
-            result = agents.run(ctx.cfg, ctx.agent_cfg, prompt, ctx.worktree)
+            result = agents.run(ctx.cfg, ctx.agent_cfg, prompt, ctx.worktree, project_cfg=ctx.project_cfg)
         finally:
             ctx.event("agent_finished", "Docs line fix finished" if result else "Docs line fix stopped unexpectedly")
         runs.record_usage(ctx.conn, ctx.run["id"], ctx.run["agent"], result.get("usage"), result.get("cost_usd"),
@@ -783,7 +783,7 @@ def _prepare_checkout(ctx, issue, has_work):
         ctx.event("agent_started", "Preparation repair started")
         result = None
         try:
-            result = agents.run(ctx.cfg, ctx.agent_cfg, prompt, ctx.worktree)
+            result = agents.run(ctx.cfg, ctx.agent_cfg, prompt, ctx.worktree, project_cfg=ctx.project_cfg)
         finally:
             ctx.event("agent_finished", "Preparation repair finished" if result else "Repair stopped unexpectedly")
         runs.record_usage(ctx.conn, ctx.run["id"], ctx.run["agent"], result.get("usage"),
