@@ -391,6 +391,12 @@ def has_unpushed_commits(repo, branch):
 
 
 @_serialized
+def unpushed_commits(repo, branch):
+    """Commit IDs absent from every origin ref, read from trusted local refs."""
+    return _git(["rev-list", f"refs/heads/{branch}", "--not", "--remotes=origin"], repo).stdout.split()
+
+
+@_serialized
 def has_commits_beyond_base(repo, branch, base_branch):
     """True if the branch has commits the base branch on origin doesn't contain.
 

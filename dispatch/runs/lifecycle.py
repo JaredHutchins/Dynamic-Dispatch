@@ -107,14 +107,15 @@ def mark_committed(conn, run_id):
 
 
 def last_committed(conn, issue_id, before_id):
-    """The latest run before this one that committed work for the story, or None.
+    """The latest story run before this one that committed work, or None.
 
     Only a committing run changes what the branch holds unpushed, so it alone
     says whether that work was stopped by a failure or a usage limit, or pulled
-    out by a human. Only the last is cancelled.
+    out by a human. Only the last is cancelled. Refresh commits are DD's own
+    work, so cancelling a refresh does not turn it into pulled-out agent work.
     """
     return conn.execute(
-        "SELECT * FROM runs WHERE issue_id = ? AND id < ? AND committed = 1 ORDER BY id DESC LIMIT 1",
+        "SELECT * FROM runs WHERE issue_id = ? AND id < ? AND committed = 1 AND kind != 'refresh' ORDER BY id DESC LIMIT 1",
         (issue_id, before_id),
     ).fetchone()
 

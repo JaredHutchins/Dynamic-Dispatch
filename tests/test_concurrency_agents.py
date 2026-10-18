@@ -6,7 +6,7 @@ import json, os, stat, time
 from unittest import mock
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
-from dispatch import agents, choose, cleanup, github, gitops, redact, runs, sync, worker
+from dispatch import agents, choose, cleanup, github, gitops, redact, runs, sync, verify, worker
 import main as dd_main
 from helpers import (
     Base,
@@ -15,6 +15,7 @@ from helpers import (
     HERE,
     MainChanges,
     ORCH,
+    PY,
     PY,
     S_BACK,
     S_BLK,
@@ -146,6 +147,119 @@ class TwoAgents(Base):
         conn.close()
         self.assertEqual(agent, "codex")
         self.assertAlmostEqual((datetime.fromisoformat(until) - before).total_seconds(), 3600, delta=30)
+
+    def cancelled_refresh(self):
+        self.cfg["projects"]["dd"]["agents"] = ["codex", "claude-code"]
+        self.add_issue()
+        self.cycle()
+        MainChanges.advance_main(self)
+        original = verify.run_verify
+        def moved(*args):
+            board.issues["i1"]["state"] = {"id": S_IP}
+            return original(*args)
+        with mock.patch.object(verify, "run_verify", side_effect=moved):
+            self.cycle()
+        self.assertEqual(self.run_rows()[-1]["kind"], "refresh")
+        self.assertEqual(self.run_rows()[-1]["status"], runs.CANCELLED)
+        self.assertTrue(gitops.has_unpushed_commits(self.repo, "dd-7"))
+
+    def test_cancelled_refresh_then_rework_is_not_pulled_out(self):
+        self.cancelled_refresh()
+        self.set_codex_mode("prompt")
+        self.cycle()
+        self.assertEqual(self.run_rows()[-1]["status"], runs.DONE)
+        prompt = git("show", "dd-7:prompt.txt", cwd=self.origin)
+        self.assertNotIn(worker.FINISHED_WORK_NOTE, prompt)
+        self.assertIn("reviewer's latest instructions", prompt)
+        self.assertEqual(len(prs), 1)
+
+    def unfinished_handoff(self, restore_failure=False):
+        tree = self.wt_root / "dd-7"
+        original = Path.stat
+        def other_group(path, *args, **kwargs):
+            st = original(path, *args, **kwargs)
+            if path == tree and self.run_rows()[-1]["agent"] == "claude-code":
+                values = list(st); values[5] = os.getegid() + 1
+                return os.stat_result(values)
+            return st
+        self.set_codex_mode("limit_partial")
+        self.set_mode("prompt")
+        with mock.patch.object(Path, "stat", other_group):
+            if restore_failure:
+                with mock.patch.object(gitops, "restore_unfinished", side_effect=gitops.GitError("cannot restore")):
+                    self.cycle()
+            else:
+                self.cycle()
+
+    def test_rework_limit_after_combine_hands_on_and_updates_pr(self):
+        self.cancelled_refresh()
+        self.cfg["projects"]["dd"]["prepare_commands"] = [
+            [PY, "-c", "from pathlib import Path; Path('prepared.py').write_text('READY = 1\\n')"]]
+        self.unfinished_handoff()
+        self.assertEqual([r["status"] for r in self.run_rows()][-2:], [runs.LIMITED, runs.DONE])
+        prompt = git("show", "dd-7:prompt.txt", cwd=self.origin)
+        self.assertIn("reviewer's latest instructions", prompt)
+        self.assertIn("already contains committed work", prompt)
+        self.assertIn("- added: partial.py", prompt)
+        self.assertNotIn(worker.FINISHED_WORK_NOTE, prompt)
+        self.assertIn("HALF = 1", git("show", "dd-7:partial.py", cwd=self.origin))
+        self.assertTrue(gitops.branch_exists(self.repo, "dd-7-leftover-4"))
+        self.assertIn("READY = 1", git("show", "dd-7:prepared.py", cwd=self.origin))
+        self.assertTrue(self.run_rows()[-1]["docs_line"].startswith("Docs:"))
+        self.assertEqual(len(prs), 1)
+
+    def test_build_limit_with_earlier_unpushed_commits_hands_on(self):
+        self.cfg["projects"]["dd"]["agents"] = ["codex", "claude-code"]
+        self.add_issue()
+        board.get_states = [S_IP, "FAIL"]
+        self.cycle()
+        board.issues["i1"]["state"] = {"id": S_IP}
+        (self.wt_root / "dd-7" / "unfinished.py").write_text("START = 1\n")
+        self.unfinished_handoff()
+        self.assertEqual([r["status"] for r in self.run_rows()][-2:], [runs.LIMITED, runs.DONE])
+        self.assertIn("START = 1", git("show", "dd-7:unfinished.py", cwd=self.origin))
+        self.assertIn("HALF = 1", git("show", "dd-7:partial.py", cwd=self.origin))
+
+    def test_rework_decision_with_unpushed_commits_still_verifies_and_pushes(self):
+        self.cancelled_refresh()
+        before = git("rev-parse", "dd-7", cwd=self.origin)
+        original = agents.run
+        def decide(cfg, agent_cfg, prompt, tree, **kwargs):
+            if agent_cfg["display_name"] == "Codex":
+                return original(cfg, agent_cfg, prompt, tree, **kwargs)
+            (tree / "partial.py").unlink()
+            return {"ok": True, "summary": "DD-DECISION-NEEDED\nThe requested edit is obsolete.\n\n"
+                    "Docs: none needed, because only the existing code is retained."}
+        with mock.patch.object(agents, "run", side_effect=decide), \
+                mock.patch.object(verify, "run_verify", wraps=verify.run_verify) as checked:
+            self.unfinished_handoff()
+        row = self.run_rows()[-1]
+        self.assertEqual(row["status"], runs.DONE)
+        self.assertTrue(row["needs_decision"])
+        self.assertFalse(row["no_changes"])
+        self.assertTrue(checked.called)
+        self.assertNotEqual(git("rev-parse", "dd-7", cwd=self.origin), before)
+
+    def test_handed_on_rework_failing_tests_does_not_update_pr(self):
+        self.cancelled_refresh()
+        before = git("rev-parse", "dd-7", cwd=self.origin)
+        with mock.patch.object(verify, "run_verify", return_value=(False, "unfinished work fails")):
+            self.unfinished_handoff()
+        self.assertEqual(self.run_rows()[-1]["status"], runs.FAILED)
+        self.assertIn("Verification failed", self.run_rows()[-1]["error"])
+        self.assertEqual(git("rev-parse", "dd-7", cwd=self.origin), before)
+
+    def test_failed_leftover_restore_blocks_with_recovery_steps(self):
+        self.cancelled_refresh()
+        before = git("rev-parse", "dd-7", cwd=self.origin)
+        self.unfinished_handoff(restore_failure=True)
+        row = self.run_rows()[-1]
+        self.assertEqual(row["status"], runs.FAILED)
+        for part in ("dd-7-leftover-4", "untested, unfinished", "diff", "--binary", "apply --reject",
+                     "branch -D", "In Progress"):
+            self.assertIn(part, row["error"])
+        self.assertEqual(git("rev-parse", "dd-7", cwd=self.origin), before)
+        self.assertTrue(gitops.branch_exists(self.repo, "dd-7-leftover-4"))
 
     def test_switch_keeps_unfinished_changes_on_the_leftover_branch_and_names_it(self):
         self.cfg["projects"]["dd"]["agents"] = ["codex", "claude-code"]

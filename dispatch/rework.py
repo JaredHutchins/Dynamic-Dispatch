@@ -8,10 +8,11 @@ MARKER = "DD-DECISION-NEEDED"
 NEEDS_DECISION = "needs decision"
 
 
-def pull_request(cfg, conn, run):
+def pull_request(cfg, conn, run, *, continuing=False):
     """The earlier DD pull request eligible for rework, or None.
 
-    Saved or held work resumes its existing outcome rather than doing rework.
+    Clean saved or held work resumes its existing outcome rather than doing rework.
+    The worker marks unfinished hand-offs and DD-only combine commits as continuing.
     GitHub discovery alone never makes a first build count as rework.
     """
     if run["kind"] != "story" or run["hold_data"]:
@@ -24,7 +25,7 @@ def pull_request(cfg, conn, run):
         return None
     project = cfg["projects"][run["project"]]
     repo = project["repo_path"]
-    if not gitops.branch_exists(repo, run["branch"]) or gitops.has_unpushed_commits(repo, run["branch"]):
+    if not gitops.branch_exists(repo, run["branch"]) or (not continuing and gitops.has_unpushed_commits(repo, run["branch"])):
         return None
     if github.pr_is_open(project["github_repo"], previous["pr_url"], github.token(cfg["github"])):
         return previous["pr_url"]

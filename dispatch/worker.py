@@ -6,7 +6,8 @@ the agent (sandboxed), check it changed something, run verification
 open the PR. Before upload, fetch and merge main without committing, repair
 conflicts or failing verification with the same agent (at most twice per run),
 and commit only the verified combination. A branch with commits that never reached origin skips the agent
-and its commit: that work is verified again, then pushed. The exception is work
+and its commit: that work is verified again, then pushed. Unfinished edits instead
+return to an agent alongside those commits. Another exception is work
 a human pulled out mid-run by moving the story out of In Progress: that branch
 keeps its work and the agent checks it against the current story. A branch that was
 pushed but never got its pull request skips the agent, the commit and the push:
@@ -20,6 +21,7 @@ repeated limits block it. Assignment is best-effort; outcome writes go through b
 
 from datetime import date, datetime, timezone
 import json
+import shlex
 import sqlite3
 
 from . import alerts, agents, assessments, choose, combine, config, docs_line, github, gitops, mainhealth, plane, prepare, prompts, rework, runs, sync, verify
@@ -130,6 +132,7 @@ class RunContext:
         self.leftover_note = ""
         self.needs_build = False  # the agent still has to build the story
         self.resuming = False
+        self.committed_work = False
         self.pulled_out = False
         self.retrying_pr = False
         self.earlier = None  # the run whose saved work this one resumes or retries
@@ -183,6 +186,17 @@ class RunContext:
         return self.cancel(note)
 
 
+def _continuing_rework(ctx):
+    """Unfinished rework or DD-only refresh commits still belong to the open PR."""
+    if ctx.refresh or not gitops.branch_exists(ctx.repo, ctx.run["branch"]):
+        return False
+    tree = gitops.registered_worktree(ctx.repo, ctx.run["branch"])
+    if tree is not None and tree.is_dir() and gitops.has_changes(ctx.repo, tree):
+        return True
+    commits = gitops.unpushed_commits(ctx.repo, ctx.run["branch"])
+    return bool(commits) and all(runs.combine_commit(ctx.conn, sha) is not None for sha in commits)
+
+
 def _start(cfg, conn, run):
     """Return the context and startup values, or None when the run stops here."""
     if mainhealth.stopped(conn, run["project"], run["issue_id"]):
@@ -217,7 +231,7 @@ def _start(cfg, conn, run):
     # Checked before the started alert and assignment, so a retry after
     # GitHub was unreachable doesn't repeat them.
     try:
-        rework_pr = rework.pull_request(ctx.cfg, ctx.conn, ctx.run)
+        rework_pr = rework.pull_request(ctx.cfg, ctx.conn, ctx.run, continuing=_continuing_rework(ctx))
     except github.GitHubError as e:
         ctx.event("warning", f"Could not check whether this is rework: {e}")
         return ctx.cancel(f"Could not check whether this is rework ({e}). It will be picked up on the next poll.")
@@ -294,8 +308,6 @@ def _prepare(ctx, group, existing, saved):
         ctx.result = {}
         return True
 
-    # A human may have edited the story while it was out of In Progress.
-    # Keep its finished work, but have the agent check the current requirements.
     try:
         previous = runs.last_committed(ctx.conn, ctx.run["issue_id"], ctx.run["id"])
         ctx.pulled_out = (
@@ -330,10 +342,17 @@ def _prepare(ctx, group, existing, saved):
     # Either way, keep the finished agent's work rather than running it again.
     try:
         ctx.resuming = gitops.has_unpushed_commits(ctx.repo, ctx.run["branch"])
+        ctx.committed_work = ctx.resuming
     except gitops.GitError as e:
         return ctx.fail(f"Could not inspect the branch:\n\n{e}")
-    # Unpushed commits on top are pushed with the pull request by the resume below.
     ctx.retrying_pr = ctx.retrying_pr and not ctx.resuming
+
+    try:
+        if _handoff_needed(ctx, saved):
+            ctx.needs_build = True
+            return True
+    except gitops.GitError as e:
+        return ctx.fail(f"Could not inspect unfinished work:\n\n{e}")
 
     if ctx.run["hold_data"]:
         ctx.result = json.loads(ctx.run["hold_data"])
@@ -382,15 +401,31 @@ def _prepare(ctx, group, existing, saved):
                 "Commit or discard them, then move the story back to In Progress."
             )
     else:
-        if ctx.pulled_out:
-            try:
-                if saved is not None or gitops.has_changes(ctx.repo, ctx.worktree):
-                    return ctx.fail("The branch also has uncommitted changes, so nothing was pushed. "
-                                "Commit or discard them, then move the story back to In Progress.")
-            except gitops.GitError as e:
-                return ctx.fail(f"Could not inspect the worktree:\n\n{e}")
         ctx.needs_build = True
     return True
+
+
+def _handoff_needed(ctx, saved):
+    """Unfinished edits and DD-only combine commits must not skip the agent."""
+    if ctx.run["hold_data"] or ctx.retrying_pr:
+        return False
+    commits = gitops.unpushed_commits(ctx.repo, ctx.run["branch"])
+    only_combines = bool(commits) and all(runs.combine_commit(ctx.conn, sha) is not None for sha in commits)
+    if only_combines:
+        ctx.pulled_out = False
+    return saved is not None or gitops.has_changes(ctx.repo, ctx.worktree) or only_combines
+
+
+def _leftover_steps(ctx, saved):
+    if not saved:
+        return ""
+    repo, tree, branch = map(shlex.quote, (str(ctx.repo), str(ctx.worktree), saved))
+    patch = shlex.quote(str(ctx.worktree.parent / f"{saved}.patch"))
+    return (f"\n\nLocal branch {saved} holds the earlier agent's untested, unfinished changes. "
+            f"To keep them, run `git -C {repo} diff {branch}^ {branch} --binary > {patch}`, "
+            f"then `git -C {tree} apply --reject {patch}` and resolve any .rej files. "
+            f"To discard them, run `git -C {repo} branch -D {branch}`. "
+            "Then move the story back to In Progress. The story branch's committed work stays in place.")
 
 
 def _build(ctx, title, issue, rework_pr, saved, group):
@@ -412,13 +447,17 @@ def _build(ctx, title, issue, rework_pr, saved, group):
                       "work folder, uncommitted; the branch is kept")
             unfinished = gitops.unfinished_changes(ctx.repo, ctx.worktree, UNFINISHED_LIMIT)
         except gitops.GitError as e:
-            return ctx.fail(f"Could not hand on the unfinished changes:\n\n{e}")
+            return ctx.fail(f"Could not hand on the unfinished changes:\n\n{e}" + _leftover_steps(ctx, saved))
         if not _prepare_checkout(ctx, issue, bool(unfinished or restored or ctx.pulled_out or rework_pr)):
             return
         prompt = (prompts.build_prompt(ctx.project_cfg, issue) + rework.prompt(rework_pr)
                   + docs_line.instruction(config.docs(ctx.project_cfg), rework=bool(rework_pr)))
         if ctx.pulled_out:
             prompt += UNCHECKED_WORK_NOTE if ctx.unchecked else FINISHED_WORK_NOTE
+        if ctx.committed_work and not ctx.pulled_out:
+            prompt += ("\n\nThis branch already contains committed work that has not been pushed. "
+                       "Inspect HEAD for that committed work and check it against the current story. Any unfinished changes "
+                       "listed below are uncommitted and unverified. Summarise the whole branch's work.")
         if unfinished:
             maker = maker or _earlier_agent(ctx.cfg, ctx.conn, ctx.run)
             count = len(unfinished["files"])
@@ -449,7 +488,8 @@ def _build(ctx, title, issue, rework_pr, saved, group):
             ctx.changed = gitops.has_changes(ctx.repo, ctx.worktree)
         except gitops.GitError as e:
             return ctx.fail(f"Could not inspect the worktree:\n\n{e}")
-        outcome = rework.finish(ctx.cfg, ctx.conn, ctx.run, result, ctx.changed, ctx.pulled_out, rework_pr, ctx.worktree)
+        outcome = rework.finish(ctx.cfg, ctx.conn, ctx.run, result, ctx.changed or ctx.committed_work,
+                                ctx.pulled_out, rework_pr, ctx.worktree)
         if outcome == rework.NEEDS_DECISION:
             sync.reconcile(ctx.cfg, ctx.conn, runs.get(ctx.conn, ctx.run["id"]))
             return
@@ -473,7 +513,7 @@ def _build(ctx, title, issue, rework_pr, saved, group):
         if not ok:
             return ctx.fail(f"Verification failed, so this never reached review:\n\n{verify_output}")
 
-    if (not ctx.resuming or ctx.pulled_out) and not ctx.retrying_pr and ctx.changed:
+    if (ctx.needs_build or not ctx.resuming or ctx.pulled_out) and not ctx.retrying_pr and ctx.changed:
         ctx.event("saving", "Saving changes")
         try:
             gitops.commit_all(ctx.repo, ctx.worktree, scrub(title), ctx.agent_cfg["git_author"])
@@ -481,7 +521,7 @@ def _build(ctx, title, issue, rework_pr, saved, group):
             return ctx.fail(f"Could not commit the agent's changes:\n\n{e}")
         runs.mark_committed(ctx.conn, ctx.run["id"])
 
-    if ctx.resuming or ctx.retrying_pr:
+    if ctx.committed_work or ctx.retrying_pr:
         ctx.combined_note = runs.combined_note(ctx.conn, ctx.run["issue_id"]) or ""
     return True
 
@@ -537,7 +577,8 @@ def _check_docs(ctx, issue, rework_pr):
             ctx.changed = gitops.has_changes(ctx.repo, ctx.worktree)
         except gitops.GitError as e:
             return ctx.fail(f"Could not inspect the worktree:\n\n{e}")
-        outcome = rework.finish(ctx.cfg, ctx.conn, ctx.run, result, ctx.changed, ctx.pulled_out, rework_pr, ctx.worktree)
+        outcome = rework.finish(ctx.cfg, ctx.conn, ctx.run, result, ctx.changed or ctx.committed_work,
+                                ctx.pulled_out, rework_pr, ctx.worktree)
         if outcome == rework.NEEDS_DECISION:
             sync.reconcile(ctx.cfg, ctx.conn, runs.get(ctx.conn, ctx.run["id"]))
             return

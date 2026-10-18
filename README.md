@@ -160,6 +160,12 @@ Sprint-pull is off unless you turn it on for a project.
 
 ## Keeping work safe
 
+When an agent stops partway, DD hands unfinished edits to the next agent even
+if the branch also has unpushed commits. Rework keeps the reviewer's instructions,
+and the whole branch is checked before upload. If saved edits cannot be restored,
+the story goes to Blocked with the leftover branch name and commands to keep or
+discard those edits; unpushed commits alone do not cause this Blocked case.
+
 - **Sandboxed agent accounts.** Each agent runs as its own Unix account with
   an empty environment and only its own model login. Plane and GitHub tokens
   stay with DD, and secrets are scrubbed from everything DD stores, logs or

@@ -1,6 +1,7 @@
 """Tests for recovery."""
 
 import os, sqlite3
+from pathlib import Path
 from unittest import mock
 from dispatch import agents, choose, github, gitops, proc, runs, sync, verify, worker
 import main as dd_main
@@ -307,15 +308,16 @@ class Resume(Base):
         self.assertEqual(prs, {})
         self.assertEqual(board.issues["i1"]["state"], {"id": S_BLK})
 
-    def test_uncommitted_changes_on_resume_block_and_push_nothing(self):
+    def test_uncommitted_changes_on_resume_are_handed_on(self):
         self.block_before_push()
         (self.wt_root / "dd-7" / "stray.py").write_text("x = 1\n")
+        self.set_mode("prompt")
         self.cycle()
-        rows = self.run_rows()
-        self.assertEqual(rows[-1]["status"], runs.FAILED)
-        self.assertIn("uncommitted changes", rows[-1]["error"])
-        self.assertEqual(sandbox_calls, [])
-        self.assertNotIn("dd-7", git("branch", "--list", cwd=self.origin))
+        self.assertEqual(self.run_rows()[-1]["status"], runs.DONE)
+        prompt = git("show", "dd-7:prompt.txt", cwd=self.origin)
+        self.assertIn("already contains committed work", prompt)
+        self.assertIn("- added: stray.py", prompt)
+        self.assertIn("x = 1", git("show", "dd-7:stray.py", cwd=self.origin))
 
     def test_normal_rework_still_runs_the_agent(self):
         self.add_issue()
@@ -448,17 +450,26 @@ class FinishedWorkRecheck(Base):
         self.assertEqual(git("rev-parse", "dd-7", cwd=self.origin).strip(), old)
         self.assertEqual(self.local_branches(), ["dd-7", "main"])
 
-    def test_uncommitted_changes_block_and_nothing_is_renamed(self):
+    def test_pulled_out_work_with_leftovers_is_handed_on(self):
         old = self.pull_out()
-        (self.wt_root / "dd-7" / "stray.py").write_text("x = 1\n")
-        self.cycle()
-        rows = self.run_rows()
-        self.assertEqual(rows[-1]["status"], runs.FAILED)
-        self.assertIn("uncommitted changes", rows[-1]["error"])
-        self.assertEqual(self.local_branches(), ["dd-7", "main"])
-        self.assertEqual(git("rev-parse", "dd-7", cwd=self.repo).strip(), old)
-        self.assertTrue((self.wt_root / "dd-7" / "stray.py").exists())
-        self.assertNotIn("dd-7", git("branch", "--list", cwd=self.origin))
+        tree = self.wt_root / "dd-7"
+        (tree / "stray.py").write_text("x = 1\n")
+        self.set_mode("prompt")
+        original = Path.stat
+        def other_group(path, *args, **kwargs):
+            st = original(path, *args, **kwargs)
+            if path == tree:
+                values = list(st); values[5] = os.getegid() + 1
+                return os.stat_result(values)
+            return st
+        with mock.patch.object(Path, "stat", other_group):
+            self.cycle()
+        self.assertEqual(self.run_rows()[-1]["status"], runs.DONE)
+        prompt = git("show", "dd-7:prompt.txt", cwd=self.origin)
+        self.assertIn(worker.FINISHED_WORK_NOTE, prompt)
+        self.assertIn("- added: stray.py", prompt)
+        self.assertEqual(git("rev-parse", "dd-7^", cwd=self.origin).strip(), old)
+        self.assertIn("dd-7-leftover-2", self.local_branches())
 
     def test_normal_rework_runs_the_agent_on_the_existing_branch(self):
         self.add_issue()
