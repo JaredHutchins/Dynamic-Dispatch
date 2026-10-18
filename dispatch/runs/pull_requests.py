@@ -1,6 +1,4 @@
-"""Pull request status lights, approval notices, settled pull requests and final summaries."""
-
-from .store import AWAITING_REVIEW, DONE
+"""Pull request status lights, approval notices and settled pull requests."""
 
 
 def pr_settled(conn, pr_url):
@@ -18,25 +16,6 @@ def pull_request(conn, project, issue_id):
         "SELECT pr_url, branch FROM runs WHERE project = ? AND issue_id = ? AND pr_url IS NOT NULL "
         "ORDER BY id DESC LIMIT 1", (project, issue_id),
     ).fetchone()
-
-
-def final_pull_request(conn, project, issue_id):
-    """The latest story run whose summary became its pull request's description, or None.
-
-    Refreshes and unchanged decision requests leave the description as it was, so they don't count.
-    """
-    return conn.execute(
-        "SELECT * FROM runs WHERE project = ? AND issue_id = ? AND kind = 'story' AND pr_url IS NOT NULL "
-        "AND summary IS NOT NULL AND no_changes = 0 AND status IN (?, ?) ORDER BY id DESC LIMIT 1",
-        (project, issue_id, DONE, AWAITING_REVIEW),
-    ).fetchone()
-
-
-def combine_notes(conn, issue_id):
-    """Every note DD's combine commits recorded for the story, as a set."""
-    return {row["note"] for row in conn.execute(
-        "SELECT c.note FROM combine_commits c JOIN runs r ON r.id = c.run_id "
-        "WHERE r.issue_id = ? AND c.note IS NOT NULL", (issue_id,))}
 
 
 def light(conn, project, issue_id):

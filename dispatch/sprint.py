@@ -4,7 +4,7 @@ from datetime import datetime
 import http.client
 import json
 
-from . import alerts, choose, cycle_dates, github, mainhealth, plane, release_notes, runs, stories, sync
+from . import alerts, choose, cycle_dates, github, mainhealth, plane, runs, stories, sync
 
 
 PLANE_ERRORS = (plane.PlaneError, OSError, ValueError, http.client.HTTPException)
@@ -31,11 +31,6 @@ def poll(cfg, conn):
         except PLANE_ERRORS + (github.GitHubError,) as exc:
             runs.record_event(conn, None, 'warning', f'Could not end Cycle early; retrying next poll: {exc}',
                               project=name)
-        try:
-            release_notes.write(cfg, conn, client, name, project, cycle_list)
-        except PLANE_ERRORS + (github.GitHubError,) as exc:
-            runs.record_event(conn, None, 'warning',
-                              f'Could not write draft release notes; retrying next poll: {exc}', project=name)
         if mainhealth.stopped(conn, name):
             continue
         try:
