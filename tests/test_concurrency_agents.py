@@ -338,12 +338,31 @@ class TwoAgents(Base):
         self.assertLess(types.index("unfinished_restored"), types.index("unfinished_in_prompt"))
         self.assertLess(types.index("unfinished_in_prompt"), types.index("agent_started"))
 
+    def cycles_at(self, now, count):
+        """Run cycles with DD's clock fixed in Chicago, so the local day the cool-down ends on is known."""
+        try:
+            with mock.patch.dict(os.environ, {"TZ": "America/Chicago"}), \
+                    mock.patch.object(choose, "datetime", wraps=datetime) as cooldown_clock, \
+                    mock.patch.object(sync, "datetime", wraps=datetime) as message_clock:
+                cooldown_clock.now.return_value = message_clock.now.return_value = now
+                time.tzset()
+                for _ in range(count):
+                    self.cycle()
+        finally:
+            time.tzset()
+
     def test_limit_with_no_other_agent_waits_with_one_comment_then_continues(self):
+        # 23:49 UTC is 18:49 in Chicago, so the hour's cool-down ends the same local day.
+        self.wait_out_limit(datetime(2030, 10, 19, 23, 49, tzinfo=timezone.utc), "19:49", "19:49")
+
+    def test_limit_wait_ending_after_local_midnight_names_the_day(self):
+        # 04:49 UTC on Sunday is 23:49 on Saturday in Chicago, so the cool-down ends on Sunday.
+        self.wait_out_limit(datetime(2030, 10, 20, 4, 49, tzinfo=timezone.utc), "00:49", "Sun 00:49")
+
+    def wait_out_limit(self, now, resume_at, resting_until):
         self.cfg["projects"]["dd"]["agents"] = ["claude-code"]
         self.set_mode("limit"); self.add_issue()
-        self.cycle()
-        until = datetime.fromisoformat(runs.cooldowns(self.conn, runs.now())["claude-code"])
-        self.cycle(); self.cycle()
+        self.cycles_at(now, 3)
         [row] = self.run_rows()
         self.assertEqual(row["status"], runs.LIMITED)
         self.assertEqual(board.issues["i1"]["state"], {"id": S_IP})
@@ -353,10 +372,9 @@ class TwoAgents(Base):
         self.assertEqual(board.comments[0][0], ORCH)
         self.assertIn("All agents have reached their usage limits, so this story is waiting in "
                       "In Progress. Nothing needs doing. It will continue automatically at "
-                      f"{until.astimezone():%H:%M} (in about 60 minutes), when Claude is available again.",
+                      f"{resume_at} (in about 60 minutes), when Claude is available again.",
                       board.comments[0][2])
-        self.assertIn(f"Claude is resting after its usage limit until {until.astimezone():%H:%M}.",
-                      board.comments[0][2])
+        self.assertIn(f"Claude is resting after its usage limit until {resting_until}.", board.comments[0][2])
         self.assertIn(f"[Dynamic Dispatch run {row['id']} waiting]", board.comments[0][2])
         self.assertIn("waiting", self.event_types(run_id=row["id"]))
         # The first cool-down ends: the story starts by itself.
