@@ -139,11 +139,10 @@ Cycle:
    agents become free and the stories they depend on are done.
 5. When the Cycle ends, stories that never started are carried over to the
    Product Backlog with a note.
-6. DD then adds draft release notes to the Cycle's description, below the
-   plan, copied from its records and the pull requests: each Done story's
-   title, pull request link, first summary paragraph and Docs line, then the
-   Cancelled and carried-over stories. Check them before publishing a release;
-   DD never publishes one itself.
+6. DD writes no release notes. When you publish a release, GitHub's
+   "Generate release notes" button on the new-release form lists the pull
+   requests merged since the previous release, and you can edit its text
+   before publishing.
 
 A Cycle ends early once all its stories are Done or Cancelled and main has
 passed its tests. A Cancelled story never releases the stories that depend on

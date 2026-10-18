@@ -84,10 +84,6 @@ CREATE TABLE IF NOT EXISTS early_cycle_ends (
     project TEXT NOT NULL, cycle_id TEXT NOT NULL, end_date TEXT NOT NULL,
     alerted INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (project, cycle_id)
 );
-CREATE TABLE IF NOT EXISTS release_notes (
-    project TEXT NOT NULL, cycle_id TEXT NOT NULL,
-    alerted INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (project, cycle_id)
-);
 CREATE TABLE IF NOT EXISTS cycle_members (
     project TEXT NOT NULL,
     cycle_id TEXT NOT NULL,
@@ -373,7 +369,7 @@ def connect(db_path, *, initialize=True):
                 conn.execute("ALTER TABLE assessment_snapshots ADD COLUMN start_date TEXT")
         _migrate_lights(conn)
         _migrate_done_stories(conn)
-        _migrate_release_notes(conn)
+        _drop_release_notes(conn)
         return conn
     except BaseException:
         conn.close()
@@ -416,14 +412,13 @@ def _migrate_done_stories(conn):
             "WHERE e.type = 'moved_to_done' GROUP BY e.project, e.issue_id")
 
 
-def _migrate_release_notes(conn):
-    # Cycles that ended before draft release notes existed never get them, so an upgrade sends no burst.
+def _drop_release_notes(conn):
+    # DD no longer writes draft release notes (Plane refuses edits to a completed Cycle), so their table goes.
     with conn:
-        if not conn.execute("INSERT OR IGNORE INTO migrations VALUES ('release_notes')").rowcount:
+        if not conn.execute("INSERT OR IGNORE INTO migrations VALUES ('drop_release_notes')").rowcount:
             return
-        conn.execute("INSERT OR IGNORE INTO release_notes SELECT project, cycle_id, 1 FROM cycle_plans "
-                     "WHERE status = 'complete' UNION "
-                     "SELECT project, cycle_id, 1 FROM early_cycle_ends WHERE alerted = 1")
+        conn.execute("DROP TABLE IF EXISTS release_notes")
+        conn.execute("DELETE FROM migrations WHERE name = 'release_notes'")
 
 
 def check_writable(db_path):

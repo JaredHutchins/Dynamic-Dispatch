@@ -25,7 +25,6 @@ class SprintBoard(Board):
         runs.save_cycle_plan(self.conn, 'project', 'c', 'plan')
         self.rules = {i: {'depends_on': [], 'overlaps': []} for i in self.items}
         self.order = ['b', 'a', 'c']
-        self.client.get_cycle.return_value = {'description': 'Approved report'}
 
     def approve(self, cycle_id='c'):
         snapshot = runs.save_assessment_snapshot(self.conn, 'project', cycle_id, 'plan', 'revision',
@@ -686,10 +685,7 @@ class EarlyFinish(SprintBoard):
             issue['state'] = 'done'
         self.remote = self.enterContext(mock.patch.object(sprint.github, 'main_revision', return_value='last-merge'))
         self.enterContext(mock.patch.object(sprint.github, 'token', return_value='fake-token'))
-        # Only the early-end alert; an ended Cycle's release notes send their own.
-        self.alert = mock.Mock()
-        self.enterContext(mock.patch.object(alerts, 'send')).side_effect = (
-            lambda *args, **kwargs: self.alert(*args, **kwargs) if 'finished early' in args[3] else None)
+        self.alert = self.enterContext(mock.patch.object(alerts, 'send'))
         self.health()
 
     def health(self, state='green', revision='last-merge'):
@@ -709,6 +705,33 @@ class EarlyFinish(SprintBoard):
         self.client.set_cycle_end.assert_called_once()
         self.alert.assert_called_once()
         self.assertTrue(runs.cycle_complete(self.conn, 'project', 'c'))
+
+    def test_ended_cycle_writes_no_release_notes(self):
+        self.start()
+        self.client.cycles.return_value[0]['end_date'] = self.client.set_cycle_end.call_args.args[2]
+        self.start()
+        self.start()
+        self.assertTrue(runs.cycle_complete(self.conn, 'project', 'c'))
+        self.client.set_cycle_description.assert_not_called()
+        self.assertEqual([c.args[3] for c in self.alert.call_args_list if 'release notes' in c.args[3]], [])
+        self.alert.assert_called_once()
+        self.assertIsNone(self.conn.execute("SELECT 1 FROM events WHERE detail LIKE '%release notes%'").fetchone())
+
+    def test_drops_release_notes_table_once(self):
+        with self.conn:
+            self.conn.execute("CREATE TABLE release_notes (project TEXT NOT NULL, cycle_id TEXT NOT NULL, "
+                              "alerted INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (project, cycle_id))")
+            self.conn.execute("INSERT INTO release_notes VALUES ('project', 'c', 1)")
+            self.conn.execute("INSERT INTO migrations VALUES ('release_notes')")
+            self.conn.execute("DELETE FROM migrations WHERE name = 'drop_release_notes'")
+        for _ in range(2):
+            self.conn.close()
+            self.conn = runs.connect(self.path)
+            tables = {r['name'] for r in self.conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+            self.assertNotIn('release_notes', tables)
+            names = {r['name'] for r in self.conn.execute("SELECT name FROM migrations")}
+            self.assertIn('drop_release_notes', names)
+            self.assertNotIn('release_notes', names)
 
     def test_started_today_ends_today(self):
         self.client.cycles.return_value[0]['start_date'] = '2026-10-06'

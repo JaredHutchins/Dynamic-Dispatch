@@ -840,19 +840,10 @@ changes start dates, unapproved Cycles, or dates that have already ended.
 A successful change sends one silent alert with the new date, remembered across
 restarts. A refused Plane update records a warning and is retried later.
 
-When a Cycle officially ends, DD adds a "Draft release notes" section to the
-Cycle's description, below the plan. A Cycle officially ends once its end date
-has passed and every story is Done or Cancelled, and either DD ended it early or
-its main check has passed on the current main. The notes list each Done story in
-build order with its title, its pull request link, the first paragraph of its
-final pull request summary and its Docs line, then the Cancelled and
-carried-over stories by title. Everything is copied from DD's records and the
-summaries DD put on the pull requests; nothing is reworded, and a missing
-pull request, summary or Docs line is shown as missing. They are a draft: check
-and edit them before publishing a release on GitHub, which DD never does. DD
-writes them once, remembered across restarts, and sends one silent alert that
-they are ready. A refused Plane update records a warning and is retried later.
-Cycles that had already ended when DD gained this get no notes.
+DD writes no release notes for a Cycle. When you publish a release on GitHub,
+press "Generate release notes" on the new-release form: GitHub lists the pull
+requests merged since the previous release, and you can edit that text before
+publishing. DD never publishes a release itself.
 
 The plan starts with "Scope problems: fix these before approving", listing
 scope gaps and contradictions with the story and the agent that raised each
