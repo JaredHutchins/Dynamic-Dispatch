@@ -523,6 +523,19 @@ Dispatch starts again it cleans up what the agent left behind and picks the
 story back up, keeping any work already saved, with a comment on the story
 saying so. A story cut off twice in a row goes to Blocked instead.
 
+Unfinished edits saved on a local `<story>-leftover-<run>` branch are restored
+for the next agent even when the story branch has unpushed commits. The agent
+receives separate notes about committed work and unfinished edits, plus the
+rework instructions when applicable. DD checks the whole branch's Docs line,
+configured prepare commands and tests before uploading. A cancelled refresh's
+own combine commit is not treated as work pulled out of In Progress.
+
+If DD cannot restore saved edits, it leaves the leftover branch in place and
+Blocks the story without uploading. The comment names the branch and gives
+commands to export and apply its patch (resolving rejected hunks), or discard
+that branch, then move the story back to In Progress. Discarding the leftover
+does not discard the story branch's earlier commits.
+
 A stop doesn't last past a reboot. To keep it off at boot as well:
 
     sudo systemctl disable --now dynamic-dispatch
