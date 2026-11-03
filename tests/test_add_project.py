@@ -11,7 +11,8 @@ from dispatch import add_project, config, gitops, plane, plane_apps, redact
 
 
 class FakePlane:
-    def __init__(self):
+    def __init__(self, name='Plane login for Orchestrator'):
+        self.name = name
         self.project_list = []
         self.columns = []
         self.tags = []
@@ -79,6 +80,7 @@ class SetupTests(unittest.TestCase):
             'gitops.check_repository_access': Mock(return_value=True), 'gitops.clone_project': Mock(),
             'doctor.run': Mock(return_value=0),
         }
+        patches['plane.as_agent'].return_value.name = 'Plane login for Agent'
         self.mocks = {}
         for name, value in patches.items():
             self.mocks[name] = self.enterContext(patch('dispatch.add_project.' + name, value))
@@ -131,6 +133,35 @@ class SetupTests(unittest.TestCase):
         result, text = self.run_setup()
         self.assertEqual(result, 1)
         self.assertIn('Plane request failed', text)
+        self.assertNotIn('unregistered API reply body', text)
+
+    def test_plane_failures_name_cause_without_reply_body(self):
+        body = 'unregistered API reply body fake-secret-plane'
+        unreachable = plane.PlaneError(body)
+        unreachable.__cause__ = OSError('private network details fake-secret-agent')
+        cases = (
+            (plane.PlaneError(body, status=401, sign_in_refused='invalid_client'),
+             'Plane app for Orchestrator sign-in was refused (Plane said: invalid_client)'),
+            (plane.PlaneError(body, status=403), 'Plane login for Orchestrator was rejected'),
+            (plane.PlaneError(body, status=401), 'Plane login for Orchestrator was rejected'),
+            (plane.PlaneError(body, status=404), 'Plane resource was not found'),
+            (unreachable, "Can't reach Plane; check the service URL, network and availability."),
+        )
+        for error, expected in cases:
+            with self.subTest(expected=expected, status=error.status):
+                self.service.projects = Mock(side_effect=error)
+                result, text = self.run_setup()
+                self.assertEqual(result, 1)
+                self.assertIn(expected, text)
+                self.assertNotIn('unregistered API reply body', text)
+                self.assertNotIn('private network details', text)
+
+    def test_rejected_agent_login_is_named(self):
+        agent = self.mocks['plane.as_agent'].return_value
+        agent.current_user.side_effect = plane.PlaneError('unregistered API reply body', status=403)
+        result, text = self.run_setup()
+        self.assertEqual(result, 1)
+        self.assertIn('Plane login for Agent was rejected', text)
         self.assertNotIn('unregistered API reply body', text)
 
     def test_missing_config_names_file_and_reason(self):

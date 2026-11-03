@@ -143,10 +143,14 @@ def _board(client, project_id):
     return result, label_ids
 
 
-def _members(cfg, client, project_id, enabled):
+def _members(cfg, client, project_id, enabled, using):
+    """using holds the Plane login in use, so a failure can name the one Plane rejected."""
     wanted = {client.current_user(): 20}
     for agent in cfg['agents'].values():
-        wanted.setdefault(plane.as_agent(cfg, agent).current_user(), 15)
+        agent_client = plane.as_agent(cfg, agent)
+        using[0] = agent_client.name
+        wanted.setdefault(agent_client.current_user(), 15)
+    using[0] = client.name
     if enabled:
         wanted.setdefault(cfg['plane']['approver_user_id'], 15)
     existing = {m['id'] for m in client.members(project_id)}
@@ -185,6 +189,7 @@ def run(path=None):
           "the saved Git push login write access. DD checks access where possible; it changes none of these settings.")
     path = Path(path or config.DEFAULT_CONFIG_PATH)
     original = b''
+    using = ['Plane login']
     stage = 'loading config; check its settings and private permissions'
     try:
         original = path.read_bytes()
@@ -196,12 +201,13 @@ def run(path=None):
         url, branch = _github(cfg, repo)
         stage = 'setting up Plane; check account access and project administration permissions'
         client = plane.orchestrator_login(cfg)
+        using[0] = client.name
         project = _project(client, name)
         old = cfg['projects'].get(name)
         if old and old['plane_project_id'] != project['id']:
             raise SetupError('That configured name refers to a different Plane project; nothing was replaced.')
         states, labels = _board(client, project['id'])
-        _members(cfg, client, project['id'], enabled)
+        _members(cfg, client, project['id'], enabled, using)
         saved = json.loads(original)['projects'].get(name, {})
         settings = _settings(cfg, saved, repo, command, enabled, docs, project, states, labels, branch)
         stage = 'cloning code; check the code directory, Git filters and saved push login'
@@ -234,13 +240,16 @@ def run(path=None):
     except (EOFError, KeyboardInterrupt):
         print('Setup cancelled. Run --add-project again to resume.')
     except Exception as error:
-        cause = _failure_cause(error, original)
+        cause = _failure_cause(error, original, using[0])
         print('Setup stopped while ' + stage + ': ' + cause + '. Run --add-project again to resume.')
     return 1
 
 
-def _failure_cause(error, original):
-    """Show local diagnostics, never service bodies or subprocess output."""
+def _failure_cause(error, original, login):
+    """Show local diagnostics, never service bodies or subprocess output.
+
+    login names the Plane login in use, as "Plane login for <who>".
+    """
     # Validation can fail before configure registers credentials.
     def register(value, credential=False):
         if isinstance(value, dict):
@@ -260,7 +269,10 @@ def _failure_cause(error, original):
     if isinstance(error, (config.ConfigError, OSError, json.JSONDecodeError)):
         return redact.scrub(str(error))
     if isinstance(error, plane.PlaneError):
-        return 'Plane request failed; check account access and project administration permissions'
+        return redact.scrub(doctor.service_reason(
+            error, 'Plane', login,
+            'Plane request failed; check account access and project administration permissions',
+            app=login.replace('Plane login', 'Plane app', 1)))
     if isinstance(error, gitops.GitError):
         return 'Git operation failed; check repository access, filters and directory permissions'
     # Unknown exceptions can also contain remote response bodies.
