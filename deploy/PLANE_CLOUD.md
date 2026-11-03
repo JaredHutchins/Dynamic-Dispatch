@@ -44,7 +44,9 @@ a workspace admin:
 
 ### What each app may do
 
-The install link asks for these permissions, and no more:
+The install link asks for these permissions, and no more. Each time DD
+signs in as an app it asks for the same list again; Plane refuses a sign-in
+that asks for none, or for more than the app was installed with.
 
 - The Orchestrator: `projects:read projects:write projects.members:read
   projects.members:write projects.states:read projects.states:write
@@ -123,11 +125,14 @@ Enter the web address, accept the separate Cloud API address and enter the
 workspace slug. Choose a Plane app for the Orchestrator, then enter its Client
 ID, hidden Client Secret and app installation ID. Setup checks that it signs
 in and reaches the workspace. If it fails, check the credentials, installation
-and permissions, then answer again.
+and permissions, then answer again; [Troubleshooting](#7-troubleshooting)
+explains a refused sign-in.
 
 Complete the GitHub questions and select the agents installed on your host.
-For each agent, choose its own app and enter its three values. You can also
-choose a personal token for any identity and enter it hidden.
+For each agent, choose its own app and enter its three values. Setup checks
+that it signs in and looks up its own user, as doctor does; an agent's app
+can't list projects, so setup doesn't ask it to. You can also choose a
+personal token for any identity and enter it hidden.
 
 Setup writes credentials to private config.json (mode 600). Enter preserves
 current values on rerun, including bot credentials. Changes keep a private
@@ -165,8 +170,32 @@ permissions, agent logins and host setup. The
 sudo systemctl enable --now dynamic-dispatch
 ```
 
-DD gets each app's access token itself, keeps it in memory only and renews
+DD gets each app's access token itself, asking for the permissions in
+[What each app may do](#what-each-app-may-do), keeps it in memory only and renews
 it before it runs out (about ten hours on Plane Cloud), and once more if
 Plane rejects it. A rejected app login sends the usual Plane login alert,
 naming the identity. Client secrets and access tokens are scrubbed from
 everything DD stores, logs or posts, like other secrets.
+
+## 7. Troubleshooting
+
+### Plane app sign-in was refused
+
+Setup or doctor says, for example, "Dynamic Dispatch's Plane app sign-in was
+refused (Plane said: invalid_client); check its Client ID, Client Secret and
+Installation ID." Plane refused the app's token request, and the word in
+brackets is Plane's reason. DD shows only that word, never the secret or
+Plane's full reply.
+
+- `invalid_client`: Plane doesn't recognise the Client ID and Client Secret
+  together. Check both against the app's settings in Plane, and that the
+  secret was entered whole. If the secret is lost, make a new one in Plane
+  and enter it in setup.
+- `invalid_scope`: the permissions DD asked for don't match the
+  installation. Check that these are this identity's own app's values (an
+  agent's app entered as the Orchestrator's, or the other way round, gives
+  this), and that the app was installed from the link
+  `--plane-install-link` printed for this identity. If in doubt, install it
+  again from that link and enter the new Installation ID.
+- Any other word, or no reason: check the Installation ID is the one from
+  this app's install, and that the app is still installed in the workspace.

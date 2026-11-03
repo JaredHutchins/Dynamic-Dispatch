@@ -113,15 +113,19 @@ def _plane_cloud(url):
     return host == 'plane.so' or host.endswith('.plane.so')
 
 
-def _plane_user(client, who):
-    """The login's Plane user ID, once it is shown to reach the workspace."""
+def _plane_user(client, who, app, *, projects=True):
+    """The login's Plane user ID, once it is shown to reach the workspace.
+
+    An agent's Plane app has no Projects permission, so its check stops at who-am-I, as doctor's does.
+    """
     try:
         user = client.current_user()
-        client.projects()
+        if projects:
+            client.projects()
         return user
     except Exception as error:
         raise Invalid(doctor.service_reason(error, 'Plane', who, 'Plane gave an unexpected answer; '
-                                            'check the address and workspace slug.')) from None
+                                            'check the address and workspace slug.', app)) from None
 
 
 def _plane_identity(settings, who, bot_key, token_key):
@@ -156,7 +160,7 @@ def _plane(cfg):
                                    check=_matches(r'[\w-]+', 'Enter the slug alone, without slashes.'))
         who = _plane_identity(p, 'The Orchestrator', 'orchestrator_bot', 'orchestrator_token')
         try:
-            user = _plane_user(plane.orchestrator_login(cfg), who)
+            user = _plane_user(plane.orchestrator_login(cfg), who, "Dynamic Dispatch's Plane app")
             break
         except Invalid as error:
             print(error)
@@ -278,7 +282,7 @@ def _agents(cfg, orchestrator):
         while True:
             what = _plane_identity(agent, who, 'plane_bot', 'plane_token')
             try:
-                user = _plane_user(plane.as_agent(cfg, agent), what)
+                user = _plane_user(plane.as_agent(cfg, agent), what, f"{who}'s Plane app", projects=False)
                 if user in users:
                     raise Invalid(f"That login signs in as the Orchestrator or another agent; "
                                   f"use {who}'s own Plane account.")

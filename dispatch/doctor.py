@@ -46,8 +46,17 @@ CONTAINER_AGENTS = {
 }
 
 
-def service_reason(error, service, credential, fallback):
-    """Why a service call failed, from its status and cause alone, never its message."""
+def service_reason(error, service, credential, fallback, app=None):
+    """Why a service call failed, from its status and cause alone, never its message.
+
+    app names the app whose sign-in was refused, when the error says so; only the
+    OAuth error word the service gave is shown, never its reply.
+    """
+    refused = getattr(error, 'sign_in_refused', None)
+    if refused is not None:
+        said = f"{service} said: {refused}" if refused else f"{service} gave no reason"
+        return (f"{app or credential} sign-in was refused ({said}); "
+                "check its Client ID, Client Secret and Installation ID.")
     status = getattr(error, 'status', None)
     if status in (401, 403):
         return f"{credential} was rejected; check its validity and access permissions."
@@ -106,7 +115,7 @@ def run(path=None, *, project=None):
         failed |= status == 'FAIL'
         print(f'{status} {check}: {reason}')
 
-    def check(name, action, good, bad, *, service=None, credential=None, skip=None):
+    def check(name, action, good, bad, *, service=None, credential=None, app=None, skip=None):
         if skip:
             report('SKIP', name, 'skipped: ' + skip)
             return None
@@ -116,7 +125,7 @@ def run(path=None, *, project=None):
             report('FAIL', name, str(error))
             return None
         except Exception as error:
-            report('FAIL', name, service_reason(error, service, credential, bad) if service else bad)
+            report('FAIL', name, service_reason(error, service, credential, bad, app) if service else bad)
             return None
         report('OK', name, good)
         return value
@@ -184,14 +193,16 @@ def _check_plane(cfg, check, require):
                  'Plane is reachable and the Orchestrator app signs in.' if bot else
                  'Plane is reachable and the token works.',
                  'Cannot sign in to Plane; check its URL and Orchestrator settings.',
-                 service='Plane', credential='Plane Orchestrator app login' if bot else 'Plane Orchestrator token')
+                 service='Plane', credential='Plane Orchestrator app login' if bot else 'Plane Orchestrator token',
+                 app="Dynamic Dispatch's Plane app")
     users = {}
     for index, (name, agent) in enumerate(cfg['agents'].items(), 1):
         bot = 'plane_bot' in agent
         users[name] = check(f'Plane agent {index}', lambda: plane.as_agent(cfg, agent).current_user(),
                             'App signs in.' if bot else 'Token works.',
                             'Cannot sign in; check Plane access and this agent ' + ('app.' if bot else 'token.'),
-                            service='Plane', credential='Plane agent app login' if bot else 'Plane agent token')
+                            service='Plane', credential='Plane agent app login' if bot else 'Plane agent token',
+                            app="This agent's Plane app")
 
     for index, project in enumerate(cfg['projects'].values(), 1):
         prefix = f'Plane project {index}'

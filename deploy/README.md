@@ -103,8 +103,9 @@ Have these ready first; setup tells you where to make them but makes none:
   sprint-pull.
 
 Setup asks which agents the installer set up (`claude`, `codex`, `gemini`)
-and checks each answer as it is given: the Plane address and each token sign
-in and reach the workspace, each agent has its own Plane account, the App
+and checks each answer as it is given: the Plane address and the
+Orchestrator's login sign in and reach the workspace, each agent's login
+signs in (as doctor checks it) with its own Plane account, the App
 signs in with the permissions above (or the token works) and the approver's
 GitHub account exists. A
 failed check says what to fix, never the secret, and asks again. Secrets are

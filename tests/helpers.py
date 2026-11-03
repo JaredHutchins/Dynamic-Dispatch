@@ -13,9 +13,10 @@ Set DD_TEST_GIT to a git binary if the one on PATH is unusable.
 """
 
 
-import json, os, re, shutil, subprocess, sys, tempfile, unittest
+import base64, io, json, os, re, shutil, subprocess, sys, tempfile, unittest
 from unittest import mock
 from urllib.error import HTTPError
+from urllib.parse import parse_qs
 from pathlib import Path
 
 from unraisable import install
@@ -47,6 +48,34 @@ def http_error(test, *args, **kwargs):
     error = HTTPError(*args, **kwargs)
     test.addCleanup(error.close)
     return error
+
+
+def fake_plane_app_token(test, request, installs):
+    """Plane Cloud's app token endpoint, POST /auth/o/token/.
+
+    installs maps an app's client secret to (the scopes it was installed with,
+    the access token it gets). As on Plane Cloud, an unknown app is refused
+    with invalid_client, and a missing or empty scope, or one beyond the
+    install, with invalid_scope. Refusals echo what was sent, as a careless
+    server might.
+    """
+    def refuse(code, error, sent):
+        body = json.dumps({"error": error, "error_description": f"refused {sent}"}).encode()
+        return http_error(test, request.full_url, code, "refused", {}, io.BytesIO(body))
+
+    basic = request.get_header("Authorization").removeprefix("Basic ")
+    secret = base64.b64decode(basic).decode().partition(":")[2]
+    if secret not in installs:
+        raise refuse(401, "invalid_client", secret)
+    form = parse_qs(request.data.decode())
+    if form.get("grant_type") != ["client_credentials"]:
+        raise refuse(400, "unsupported_grant_type", form)
+    installed, access = installs[secret]
+    asked = form.get("scope", [""])[0].split()
+    if not asked or not set(asked) <= set(installed):
+        raise refuse(400, "invalid_scope", asked)
+    return io.BytesIO(json.dumps({"access_token": access, "token_type": "Bearer", "expires_in": 36000,
+                                  "scope": " ".join(asked)}).encode())
 
 
 def git(*args, cwd):

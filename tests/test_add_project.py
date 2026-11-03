@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-from dispatch import add_project, config, gitops, plane
+from dispatch import add_project, config, gitops, plane, plane_apps
 
 
 class FakePlane:
@@ -112,7 +112,8 @@ class SetupTests(unittest.TestCase):
         self.path.write_text(json.dumps(self.cfg))
         self.assertEqual(self.run_setup()[0], 0)
         self.mocks['plane.Plane'].assert_called_once_with(
-            'https://api.plane.so', 'test', 'fake-secret-plane', 'Plane login for Orchestrator', bot=None)
+            'https://api.plane.so', 'test', 'fake-secret-plane', 'Plane login for Orchestrator', bot=None,
+            scopes=plane_apps.ORCHESTRATOR_SCOPES)
         self.assertEqual(config.load(self.path)['plane']['base_url'], 'https://app.plane.so')
 
     def test_all_steps_and_repeat(self):

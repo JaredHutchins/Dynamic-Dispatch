@@ -1,5 +1,4 @@
 """Guided setup, against fake Plane and GitHub replies, never shows or leaks an entered secret."""
-import base64
 import contextlib
 import getpass
 import io
@@ -12,7 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 from dispatch import config, github, plane, plane_apps, redact, setup
-from helpers import http_error, real_gh_request, real_plane_request
+from helpers import fake_plane_app_token, http_error, real_gh_request, real_plane_request
 
 # Fake secrets, made up for these tests.
 ORCH = 'fake-orchestrator-plane-token'
@@ -29,6 +28,9 @@ PLANE = 'https://plane.example.com'
 APPROVER_ID = '0f1e2d3c-0000-4000-8000-000000000001'
 ORCH_APP, CLAUDE_APP = 'fake-orchestrator-app-secret', 'fake-claude-app-secret'
 APPS = {ORCH_APP: 'fake-orchestrator-app-access', CLAUDE_APP: 'fake-claude-app-access'}
+# What each app was installed with: the Orchestrator's list, or an agent's, which can't list projects.
+INSTALLS = {ORCH_APP: (plane_apps.ORCHESTRATOR_SCOPES, APPS[ORCH_APP]),
+            CLAUDE_APP: (plane_apps.AGENT_SCOPES, APPS[CLAUDE_APP])}
 USERS = {ORCH: 'user-orchestrator', CLAUDE: 'user-claude', CODEX: 'user-codex',
          APPS[ORCH_APP]: 'user-orchestrator-app', APPS[CLAUDE_APP]: 'user-claude-app'}
 PERMISSIONS = {'contents': 'read', 'pull_requests': 'write', 'statuses': 'write'}
@@ -57,12 +59,7 @@ class Services:
     def __call__(self, request, timeout=None):
         url = request.full_url
         if url == self.plane_api + '/auth/o/token/':
-            # A Plane app's token, for the client secret in its Basic login.
-            secret = base64.b64decode(request.get_header('Authorization').removeprefix('Basic ')).decode()
-            app = secret.partition(':')[2]
-            if app not in APPS:
-                raise self.refuse(url, 401, app)
-            return Response({'access_token': APPS[app], 'token_type': 'Bearer', 'expires_in': 36000})
+            return fake_plane_app_token(self.test, request, INSTALLS)
         if url.startswith(self.plane_api):
             token = request.get_header('X-api-key') or request.get_header('Authorization').removeprefix('Bearer ')
             if token not in USERS:
@@ -70,6 +67,8 @@ class Services:
             if url == self.plane_api + '/api/v1/users/me/':
                 return Response({'id': USERS[token]})
             if url.startswith(self.plane_api + '/api/v1/workspaces/workspace/projects/'):
+                if token == APPS[CLAUDE_APP]:
+                    raise self.refuse(url, 403, token)
                 return Response({'results': [], 'next_page_results': False})
             raise self.refuse(url, 404, token)
         credential = request.get_header('Authorization').removeprefix('Bearer ')
@@ -285,7 +284,9 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(json.loads(self.path.read_text())['agents']['claude-code']['plane_bot']['client_secret'],
                          CLAUDE_APP)
         out = self.output.getvalue()
-        self.assertIn("Claude's Plane app (plane_bot) was rejected", out)
+        self.assertIn("Claude's Plane app sign-in was refused (Plane said: invalid_client); "
+                      "check its Client ID, Client Secret and Installation ID.", out)
+        self.assertNotIn('address and workspace slug', out)
         self.assertNotIn('fake-wrong-app-secret', out)
         self.assertIn(CLAUDE_APP, terminal.hidden)
         self.assert_no_secret_leaked()
@@ -306,6 +307,18 @@ class SetupTests(unittest.TestCase):
             self.assertNotIn(secret, self.output.getvalue())
         self.assert_no_secret_leaked()
 
+    def test_an_agent_app_that_cannot_list_projects_is_accepted(self):
+        # Plane answers 403 to the Claude app listing projects; setup checks it with who-am-I alone.
+        answers = [PLANE, '', 'workspace', 'yes', 'orchestrator-app', ORCH_APP, 'orchestrator-install',
+                   '', 'no', GH_TOKEN, 'reviewer', 'claude',
+                   'yes', 'claude-app', CLAUDE_APP, 'claude-install', '', 'claude@example.com', 'no', 'no']
+        result, terminal, _, _ = self.run_setup(answers)
+        self.assertEqual(result, 0)
+        self.assertEqual(terminal.hidden, [ORCH_APP, GH_TOKEN, CLAUDE_APP])
+        out = self.output.getvalue()
+        self.assertNotIn('rejected', out)
+        self.assertNotIn('refused', out)
+
     def test_custom_api_address_and_rejected_orchestrator_bot(self):
         self.services = Services(self, 'https://api.example.com')
         answers = [PLANE, 'https://api.example.com', 'workspace', 'yes', 'orchestrator-app',
@@ -317,7 +330,8 @@ class SetupTests(unittest.TestCase):
         cfg = config.load(self.path, allow_empty_projects=True)
         self.assertEqual(cfg['plane']['api_url'], 'https://api.example.com')
         self.assertEqual(cfg['plane']['orchestrator_bot']['client_secret'], ORCH_APP)
-        self.assertIn('Plane app (orchestrator_bot) was rejected', self.output.getvalue())
+        self.assertIn("Dynamic Dispatch's Plane app sign-in was refused (Plane said: invalid_client)",
+                      self.output.getvalue())
         self.assertEqual(terminal.hidden, [WRONG, ORCH_APP, GH_TOKEN, CODEX])
         self.assertNotIn(ORCH_APP, self.output.getvalue())
         self.assert_no_secret_leaked()
