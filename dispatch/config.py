@@ -6,6 +6,7 @@ hardcodes a path, a repo, or an agent name.
 """
 
 import grp
+import hashlib
 import json
 import os
 import pwd
@@ -47,6 +48,10 @@ DEFAULT_DOCS = {
 
 class ConfigError(Exception):
     pass
+
+
+class ConfigChanged(ConfigError):
+    """The file changed on disk since it was read, so it was left as it is."""
 
 
 def _require(mapping, keys, where):
@@ -465,7 +470,7 @@ def save(path, cfg, original=None):
     def unchanged():
         return path.read_bytes() == original if original is not None else not path.exists()
     if not unchanged():
-        raise ConfigError("Config changed during setup; run setup again")
+        raise ConfigChanged("Config changed during setup; run setup again")
     if original is not None:
         _require_private(path)
         if json.loads(original) == cfg and stat.S_IMODE(path.stat().st_mode) == 0o600:
@@ -486,11 +491,69 @@ def save(path, cfg, original=None):
                 f.flush()
                 os.fsync(f.fileno())
         if not unchanged():
-            raise ConfigError("Config changed during setup; run setup again")
+            raise ConfigChanged("Config changed during setup; run setup again")
         os.replace(candidate, path)
     finally:
         if candidate is not None:
             candidate.unlink(missing_ok=True)
+
+
+def progress_path(path):
+    """Where guided setup keeps its answers until it finishes, beside the config file."""
+    path = Path(path)
+    return path.with_name(path.name + ".setup-progress")
+
+
+def _fingerprint(original):
+    return None if original is None else hashlib.sha256(original).hexdigest()
+
+
+def save_progress(path, cfg, original):
+    """Keep setup's answers so far privately, for the config file whose bytes were original.
+
+    Unchecked, since a half-answered config can't load; config.json itself is
+    written only by save, once setup finishes.
+    """
+    progress = progress_path(path)
+    candidate = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=progress.parent, prefix=".dd-setup-progress-", delete=False) as f:
+            candidate = Path(f.name)
+            os.fchmod(f.fileno(), 0o600)
+            f.write((json.dumps({"config_sha256": _fingerprint(original), "config": cfg}, indent=2) + "\n").encode())
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(candidate, progress)
+        candidate = None
+    finally:
+        if candidate is not None:
+            candidate.unlink(missing_ok=True)
+
+
+def read_progress(path, original):
+    """Setup's saved answers, or None when there are none.
+
+    Refuses answers saved against a config file that has since changed, so
+    they never silently undo an edit made in between.
+    """
+    progress = progress_path(path)
+    if not progress.exists():
+        return None
+    _require_private(progress)
+    try:
+        saved = json.loads(progress.read_bytes())
+    except ValueError:
+        saved = None
+    if not isinstance(saved, dict) or not isinstance(saved.get("config"), dict):
+        raise ConfigError(f"{progress} is not setup's saved answers; move it aside, then run setup again")
+    if saved.get("config_sha256") != _fingerprint(original):
+        raise ConfigChanged(f"{path} changed after setup stopped, so its saved answers in {progress} "
+                            f"may undo that change; move {progress} aside, then run setup again")
+    return saved["config"]
+
+
+def clear_progress(path):
+    progress_path(path).unlink(missing_ok=True)
 
 
 def check_test_env_files(cfg):

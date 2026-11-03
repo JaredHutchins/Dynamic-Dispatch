@@ -57,7 +57,8 @@ It asks for the Plane address and workspace, the Orchestrator's token, the
 GitHub App's details (or a plain token), the approver, each agent's Plane
 token and commit name and email, and optional phone alerts. It checks each
 answer as it goes, types secrets hidden, and writes `config.json` readable only
-by DD's account. Then it offers to add the first project, runs the doctor and
+by DD's account when it finishes; if it stops part-way, your answers are kept
+and offered again when you rerun it. Then it offers to add the first project, runs the doctor and
 prints the command that starts DD. Agent logins are a separate step (below). Projects can be added before those
 logins: setup saves the project and lists missing agent env files. Finish the
 agent login step, then run `--doctor`. Unreadable files still stop setup; file

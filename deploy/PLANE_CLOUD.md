@@ -134,9 +134,12 @@ that it signs in and looks up its own user, as doctor does; an agent's app
 can't list projects, so setup doesn't ask it to. You can also choose a
 personal token for any identity and enter it hidden.
 
-Setup writes credentials to private config.json (mode 600). Enter preserves
-current values on rerun, including bot credentials. Changes keep a private
-backup beside the config. To add the project separately in the next step,
+Setup writes credentials to private config.json (mode 600) once it finishes.
+If it stops part-way, for example on a refused sign-in or Ctrl+C, the answers
+that already passed their checks are kept in private
+`config.json.setup-progress`; rerun `--setup` safely and they are offered as
+the current values. Enter preserves current values on rerun, including bot
+credentials. Changes keep one private backup beside the config per finished run. To add the project separately in the next step,
 answer no when offered the first project; doctor cannot fully pass yet.
 
 ## 5. Create DD's project columns and labels

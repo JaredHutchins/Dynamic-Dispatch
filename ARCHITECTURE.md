@@ -579,7 +579,14 @@ never the reply's text, which can echo the credential. Secrets are read with
 `getpass`; its fallback that echoes input without a terminal is refused, so
 setup stops instead. An existing file's own contents are the current values,
 not the defaults loading adds, and a value kept with Enter keeps its saved
-form, so the same answers save nothing. Agents come from the installer's
+form, so the same answers save nothing. `config.json` is written once, at the
+end, because the container starts DD as soon as it exists; each section's
+answers are kept as it passes in private `config.json.setup-progress`
+(`config.save_progress`), so a stop loses nothing. A rerun offers them as the
+current values but still asks every question; the file records a hash of the
+`config.json` it started from, and saved answers for a file changed since are
+refused rather than allowed to undo that change. Doctor warns while the file
+exists. Agents come from the installer's
 names, and setup only adds them: removing one could orphan a project's agent
 list. The App's private key stays in its own file; setup records its path.
 An App without contents read, pull requests write and commit statuses write

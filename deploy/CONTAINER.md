@@ -135,7 +135,9 @@ Guided setup writes `/home/dd/config/config.json` on the `dd-config` Docker
 volume, owned by `dd` with mode 600, inside a directory with mode 700. Only
 DD's account (and container root) can read it. Plane credentials and the
 GitHub API credentials belong there, never in the image or repository.
-Setup's `config.json.backup-*` files are equally private and contain secrets.
+Setup's `config.json.backup-*` files are equally private and contain secrets,
+as does `config.json.setup-progress`, where setup keeps your answers until it
+finishes.
 
 DD's Git login lives on `dd-home`; its App key can live on `dd-config`.
 The other named volumes retain the checkout, history database, project clones,
@@ -233,7 +235,11 @@ python3 main.py --setup --config /home/dd/config/config.json
 When setup asks for the agents, it suggests the ones the image includes;
 choose exactly those. For the App key path enter
 `/home/dd/config/github-app.pem`. Setup checks the Plane identities, GitHub
-login and approver, then offers to add the first project. Accept, and supply
+login and approver, then offers to add the first project. Setup writes
+`config.json` only when it finishes, so the container doesn't start DD from a
+half-finished one. If it stops part-way, your answers so far are kept in a
+private progress file beside it; rerunning the same command is safe and offers
+them as the current values. Accept, and supply
 its repository, name and test command. It creates the Plane columns and
 labels and clones the repository. Leave the default roots at
 `/srv/dynamic-dispatch/repos` and `/srv/dynamic-dispatch/worktrees`.

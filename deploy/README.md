@@ -111,9 +111,23 @@ GitHub account exists. A
 failed check says what to fix, never the secret, and asks again. Secrets are
 typed hidden and are written only to `config.json`, with mode 600.
 
+Setup writes `config.json` only once, when it finishes, so DD never sees a
+half-finished one. Until then it keeps your answers in
+`config.json.setup-progress` beside it, also mode 600 because it holds
+secrets, saving them as each section passes its checks: Plane (with the
+approver), GitHub, each agent, then alerts. If setup stops part-way (a
+failure, a refused login or Ctrl+C), it says your answers are saved and leaves
+any existing `config.json` exactly as it was; it is safe to run `--setup`
+again. The rerun still asks every question in order, offering each saved answer
+as the current value (Enter keeps it; secrets stay hidden). The progress file
+is deleted once `config.json` is written, and doctor warns while one remains.
+If `config.json` changes on disk while setup runs, setup stops rather than
+overwrite it, keeping your answers.
+
 Run it again to change something: Enter keeps each current value. A changed
 `config.json` is first backed up beside it as `config.json.backup-*`, with
-mode 600, as `--add-project` does; the same answers change nothing. Agents
+mode 600, as `--add-project` does: one backup per finished run, and the same
+answers change nothing. Agents
 already configured are kept, and other settings in the file are left alone.
 For each identity, choose a personal token or a Plane app (bot). Enter keeps
 its current choice and credentials; failed bot logins ask for the details again.

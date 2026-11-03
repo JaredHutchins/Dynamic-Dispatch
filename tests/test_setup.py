@@ -97,7 +97,9 @@ class Terminal:
         print(prompt)
         if not self.answers:
             raise EOFError()
-        return self.answers.pop(0)
+        answer = self.answers.pop(0)
+        # An answer can be what happens instead, such as Ctrl+C or a change to the file meanwhile.
+        return answer() if callable(answer) else answer
 
     def getpass(self, prompt='Password: ', stream=None):
         answer = self.input(prompt)
@@ -122,6 +124,7 @@ class SetupTests(unittest.TestCase):
         self.home = Path(directory.name)
         self.path = self.home / 'checkout' / 'config.json'
         self.path.parent.mkdir()
+        self.progress = self.path.parent / 'config.json.setup-progress'
         self.services = Services(self)
         # Other tests replace the clients' requests; these run the real clients against fake replies.
         self.enterContext(mock.patch.object(github, '_request', real_gh_request))
@@ -168,7 +171,7 @@ class SetupTests(unittest.TestCase):
         for file in self.home.rglob('*'):
             if file.is_file() and file != self.key:
                 self.assertEqual(file.stat().st_mode & 0o777, 0o600, file)
-                if file != self.path and not file.name.startswith('config.json.backup-'):
+                if file not in (self.path, self.progress) and not file.name.startswith('config.json.backup-'):
                     for secret in SECRETS:
                         self.assertNotIn(secret.encode(), file.read_bytes(), file)
 
@@ -195,6 +198,7 @@ class SetupTests(unittest.TestCase):
                          str(self.home / '.local/share/dynamic-dispatch/runs.db'))
         self.assertTrue((self.home / '.local/share/dynamic-dispatch').is_dir())
         self.assertEqual(self.backups(), [])
+        self.assertFalse(self.progress.exists())
         # Every secret was typed hidden, and nothing else was.
         self.assertEqual(terminal.hidden, [WRONG, ORCH, ORCH, CLAUDE, CODEX, DEVICE, 'too short', BARK_KEY])
         out = self.output.getvalue()
@@ -452,12 +456,149 @@ class SetupTests(unittest.TestCase):
         self.assertIn('run it in a terminal', self.output.getvalue())
         self.assertEqual(list(self.home.rglob('*')), [self.path.parent])
 
-    def test_cancel_writes_nothing(self):
-        result, *_ = self.run_setup(self.first_answers()[:20])
+    def saved(self):
+        return json.loads(self.progress.read_text())['config']
+
+    def test_a_stop_during_plane_saves_nothing(self):
+        result, *_ = self.run_setup(self.first_answers()[:9])
         self.assertEqual(result, 1)
-        self.assertIn('Setup cancelled', self.output.getvalue())
+        self.assertIn('Setup stopped. Nothing was saved', self.output.getvalue())
         self.assertEqual(list(self.home.rglob('*')), [self.path.parent])
         self.assert_no_secret_leaked()
+
+    def test_end_of_input_keeps_the_sections_before_it(self):
+        result, *_ = self.run_setup(self.first_answers()[:20])
+        self.assertEqual(result, 1)
+        self.assertIn(setup.STOPPED, self.output.getvalue())
+        self.assertFalse(self.path.exists())
+        saved = self.saved()
+        self.assertEqual(saved['plane']['orchestrator_token'], ORCH)
+        self.assertEqual(saved['github']['approver'], 'reviewer')
+        self.assertNotIn('agents', saved)
+        self.assert_no_secret_leaked()
+
+    def test_ctrl_c_keeps_the_sections_before_it(self):
+        def interrupt():
+            raise KeyboardInterrupt
+        answers = self.first_answers()[:14] + [interrupt]  # during the GitHub App's questions
+        result, *_ = self.run_setup(answers)
+        self.assertEqual(result, 1)
+        self.assertIn(setup.STOPPED, self.output.getvalue())
+        self.assertFalse(self.path.exists())
+        saved = self.saved()
+        self.assertEqual(saved['plane'], {'base_url': PLANE, 'workspace_slug': 'workspace',
+                                          'orchestrator_token': ORCH, 'approver_user_id': APPROVER_ID})
+        self.assertNotIn('github', saved)
+        self.assertEqual(self.progress.stat().st_mode & 0o777, 0o600)
+        self.assert_no_secret_leaked()
+
+    def failing_agent_login(self, answers):
+        with mock.patch.object(plane, 'as_agent', side_effect=RuntimeError('fake-agent-failure')):
+            return self.run_setup(answers)
+
+    def test_a_failure_in_the_agents_section_keeps_plane_and_github(self):
+        result, *_ = self.failing_agent_login(self.first_answers()[:20])
+        self.assertEqual(result, 1)
+        out = self.output.getvalue()
+        self.assertIn(setup.STOPPED, out)
+        self.assertNotIn('fake-agent-failure', out)
+        self.assertFalse(self.path.exists())
+        saved = self.saved()
+        self.assertEqual(saved['plane']['orchestrator_token'], ORCH)
+        self.assertEqual(saved['github'], {'app_id': '1234', 'installation_id': '42',
+                                           'private_key_path': str(self.key.resolve()), 'approver': 'reviewer'})
+        self.assert_no_secret_leaked()
+
+        # The rerun asks every question again, offering the saved answers; Enter keeps them.
+        answers = [''] * 11 + ['', 'no', CLAUDE, '', 'claude@example.com',
+                                'no', CODEX, '', 'codex@example.com', 'no', 'no']
+        result, terminal, _, _ = self.run_setup(answers)
+        self.assertEqual(result, 0)
+        self.assertTrue(terminal.prompts[0].endswith(f'[{PLANE}]: '), terminal.prompts[0])
+        self.assertIn("The Orchestrator's Plane API token [Enter keeps the current one]: ", terminal.prompts)
+        self.assertIn('GitHub App ID [1234]: ', terminal.prompts)
+        self.assertFalse(any(secret in p for p in terminal.prompts for secret in SECRETS))
+        cfg = config.load(self.path, allow_empty_projects=True)
+        self.assertEqual(cfg['plane']['orchestrator_token'], ORCH)
+        self.assertEqual(cfg['plane']['approver_user_id'], APPROVER_ID)
+        self.assertEqual(cfg['github']['approver'], 'reviewer')
+        self.assertEqual(cfg['agents']['codex']['plane_token'], CODEX)
+        self.assertFalse(self.progress.exists())
+        self.assertEqual(self.backups(), [])
+        self.assert_no_secret_leaked()
+
+    def test_a_stop_leaves_an_existing_config_as_it_was(self):
+        self.run_setup(self.first_answers())
+        original = self.path.read_bytes()
+        answers = [''] * 5 + ['0f1e2d3c-0000-4000-8000-000000000002'] + [''] * 7
+        result, *_ = self.failing_agent_login(answers)
+        self.assertEqual(result, 1)
+        self.assertEqual(self.path.read_bytes(), original)
+        self.assertEqual(self.backups(), [])
+        self.assertEqual(self.saved()['plane']['approver_user_id'], '0f1e2d3c-0000-4000-8000-000000000002')
+        # Agents in config.json stay in the saved answers too.
+        self.assertEqual(self.saved()['agents']['claude-code']['plane_token'], CLAUDE)
+        self.assert_no_secret_leaked()
+
+    def test_an_agent_only_in_the_saved_answers_can_be_left_out(self):
+        answers = self.first_answers()
+        result, *_ = self.run_setup(answers[:27])  # stops during Codex's questions
+        self.assertEqual(result, 1)
+        self.assertEqual(list(self.saved()['agents']), ['claude-code', 'codex'])
+        answers = [''] * 11 + ['claude', '', '', '', '', 'no', 'no']
+        result, *_ = self.run_setup(answers)
+        self.assertEqual(result, 0)
+        self.assertEqual(list(json.loads(self.path.read_text())['agents']), ['claude-code'])
+
+    def test_one_backup_per_run(self):
+        self.run_setup(self.first_answers())
+        original = self.path.read_bytes()
+        answers = [''] * 25
+        answers[5] = '0f1e2d3c-0000-4000-8000-000000000002'  # the approver's Plane ID
+        answers[15] = 'other@example.com'                    # Claude's commit email
+        answers[20] = 'no'                                   # no alerts
+        self.assertEqual(self.run_setup(answers[:21] + ['no'])[0], 0)
+        cfg = json.loads(self.path.read_text())
+        self.assertEqual(cfg['plane']['approver_user_id'], '0f1e2d3c-0000-4000-8000-000000000002')
+        self.assertEqual(cfg['agents']['claude-code']['git_author']['email'], 'other@example.com')
+        self.assertNotIn('alerts', cfg)
+        [backup] = self.backups()
+        self.assertEqual(backup.read_bytes(), original)
+        self.assertFalse(self.progress.exists())
+
+    def test_a_config_changed_on_disk_meanwhile_is_left_alone(self):
+        self.run_setup(self.first_answers())
+        edited = json.loads(self.path.read_text())
+        edited['poll_interval_seconds'] = 60
+
+        def edit():
+            self.path.write_text(json.dumps(edited))
+            return ''
+        answers = [''] * 25
+        answers[15] = 'other@example.com'
+        answers[21] = edit  # while the alerts are asked
+        result, *_ = self.run_setup(answers[:24])
+        self.assertEqual(result, 1)
+        out = self.output.getvalue()
+        self.assertIn('changed on disk while setup ran, so setup left it as it is', out)
+        self.assertIn(setup.STOPPED, out)
+        self.assertEqual(json.loads(self.path.read_text()), edited)
+        self.assertEqual(self.backups(), [])
+        self.assertEqual(self.saved()['agents']['claude-code']['git_author']['email'], 'other@example.com')
+        self.assert_no_secret_leaked()
+
+    def test_saved_answers_for_a_config_changed_since_are_not_offered(self):
+        self.run_setup(self.first_answers()[:20])
+        self.path.write_text('{}')
+        self.path.chmod(0o600)
+        result, terminal, *_ = self.run_setup([])
+        self.assertEqual(result, 1)
+        out = self.output.getvalue()
+        self.assertIn('changed after setup stopped', out)
+        self.assertNotIn(setup.STOPPED, out.split('changed after setup stopped')[1])
+        self.assertEqual(terminal.prompts, [])
+        self.assertEqual(self.path.read_text(), '{}')
+        self.assertTrue(self.progress.exists())
 
     def test_public_config_is_refused_untouched(self):
         self.path.write_text('{}')
@@ -469,6 +610,23 @@ class SetupTests(unittest.TestCase):
 
 
 class SaveTests(unittest.TestCase):
+    def test_progress_is_private_and_read_back(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'config.json'
+            config.save_progress(path, {'plane': {'orchestrator_token': 'fake-saved-secret'}}, None)
+            progress = config.progress_path(path)
+            self.assertEqual(progress.name, 'config.json.setup-progress')
+            self.assertEqual(progress.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(list(Path(directory).iterdir()), [progress])
+            self.assertEqual(config.read_progress(path, None), {'plane': {'orchestrator_token': 'fake-saved-secret'}})
+            with self.assertRaises(config.ConfigChanged):
+                config.read_progress(path, b'{}')
+            progress.chmod(0o644)
+            with self.assertRaises(config.ConfigError):
+                config.read_progress(path, None)
+            config.clear_progress(path)
+            self.assertIsNone(config.read_progress(path, None))
+
     def test_invalid_candidate_leaves_nothing_behind(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'config.json'
