@@ -77,16 +77,16 @@ def _docs(old):
 
 def _github(cfg, repo):
     if not github.uses_app(cfg['github']):
-        raise SetupError('Configure the ND Dispatch GitHub App before adding a project.')
+        raise SetupError('Configure your GitHub App before adding a project.')
     try:
         credential, details = github.installation_details(cfg['github'])
         permissions = details.get('permissions', {})
         if (permissions.get('contents') not in ('read', 'write') or
                 any(permissions.get(p) != 'write' for p in ('pull_requests', 'statuses'))):
-            raise SetupError('Grant the ND Dispatch app contents read, pull requests write and statuses write access.')
+            raise SetupError('Grant your GitHub App contents read, pull requests write and statuses write access.')
         repository = github.repository(repo, credential)
     except github.GitHubError:
-        raise SetupError('Cannot access the GitHub repository. Check that it exists and the ND Dispatch app has access.') from None
+        raise SetupError('Cannot access the GitHub repository. Check that it exists and your GitHub App has access.') from None
     url = f'https://github.com/{repo}.git'
     try:
         has_commit = gitops.check_repository_access(url)
@@ -143,10 +143,14 @@ def _board(client, project_id):
     return result, label_ids
 
 
-def _members(cfg, client, project_id, enabled):
+def _members(cfg, client, project_id, enabled, using):
+    """using holds the Plane login in use, so a failure can name the one Plane rejected."""
     wanted = {client.current_user(): 20}
     for agent in cfg['agents'].values():
-        wanted.setdefault(plane.as_agent(cfg, agent).current_user(), 15)
+        agent_client = plane.as_agent(cfg, agent)
+        using[0] = agent_client.name
+        wanted.setdefault(agent_client.current_user(), 15)
+    using[0] = client.name
     if enabled:
         wanted.setdefault(cfg['plane']['approver_user_id'], 15)
     existing = {m['id'] for m in client.members(project_id)}
@@ -181,9 +185,11 @@ def _settings(cfg, old, repo, command, enabled, docs, project, states, labels, b
 
 
 def run(path=None):
-    print('Before starting: create the GitHub repository, give the ND Dispatch app access, and give '
-          "the Pi's saved push login write access. DD checks access where possible; it changes none of these settings.")
+    print('Before starting: create the GitHub repository, give your GitHub App access, and give '
+          "the saved Git push login write access. DD checks access where possible; it changes none of these settings.")
     path = Path(path or config.DEFAULT_CONFIG_PATH)
+    original = b''
+    using = ['Plane login']
     stage = 'loading config; check its settings and private permissions'
     try:
         original = path.read_bytes()
@@ -195,12 +201,13 @@ def run(path=None):
         url, branch = _github(cfg, repo)
         stage = 'setting up Plane; check account access and project administration permissions'
         client = plane.orchestrator_login(cfg)
+        using[0] = client.name
         project = _project(client, name)
         old = cfg['projects'].get(name)
         if old and old['plane_project_id'] != project['id']:
             raise SetupError('That configured name refers to a different Plane project; nothing was replaced.')
         states, labels = _board(client, project['id'])
-        _members(cfg, client, project['id'], enabled)
+        _members(cfg, client, project['id'], enabled, using)
         saved = json.loads(original)['projects'].get(name, {})
         settings = _settings(cfg, saved, repo, command, enabled, docs, project, states, labels, branch)
         stage = 'cloning code; check the code directory, Git filters and saved push login'
@@ -214,6 +221,10 @@ def run(path=None):
             stage = 'saving config; check permissions and whether another process changed it'
             config.save_project(path, name, settings, original)
             print('Project saved. Running doctor for this project.')
+        for agent_name, agent in cfg['agents'].items():
+            if agent.get('env_file') and not Path(agent['env_file']).exists():
+                print(redact.scrub(f"{agent.get('display_name', agent_name)} isn't logged in yet: "
+                                   "do the agent login step, then run --doctor."))
         stage = 'running doctor; project is saved and setup can be run again'
         result = doctor.run(path, project=name)
         print('Still to do:')
@@ -225,13 +236,47 @@ def run(path=None):
         print('- Restart DD to load the project when ready.')
         return result
     except SetupError as error:
-        print('Setup stopped: ' + str(error))
+        print('Setup stopped: ' + redact.scrub(str(error)))
     except (EOFError, KeyboardInterrupt):
         print('Setup cancelled. Run --add-project again to resume.')
-    except Exception:
-        # API bodies, config errors, paths and subprocess output may contain credentials.
-        print('Setup stopped while ' + stage + '. Run --add-project again to resume.')
+    except Exception as error:
+        cause = _failure_cause(error, original, using[0])
+        print('Setup stopped while ' + stage + ': ' + cause + '. Run --add-project again to resume.')
     return 1
+
+
+def _failure_cause(error, original, login):
+    """Show local diagnostics, never service bodies or subprocess output.
+
+    login names the Plane login in use, as "Plane login for <who>".
+    """
+    # Validation can fail before configure registers credentials.
+    def register(value, credential=False):
+        if isinstance(value, dict):
+            for key, item in value.items():
+                register(item, credential or any(word in key.lower() for word in
+                                                ('token', 'secret', 'encryption_key', 'device_keys')))
+        elif isinstance(value, list):
+            for item in value:
+                register(item, credential)
+        elif credential and isinstance(value, str):
+            redact.add_secret(value, minimum_length=1)
+
+    try:
+        register(json.loads(original))
+    except (ValueError, UnicodeError):
+        pass
+    if isinstance(error, (config.ConfigError, OSError, json.JSONDecodeError)):
+        return redact.scrub(str(error))
+    if isinstance(error, plane.PlaneError):
+        return redact.scrub(doctor.service_reason(
+            error, 'Plane', login,
+            'Plane request failed; check account access and project administration permissions',
+            app=login.replace('Plane login', 'Plane app', 1)))
+    if isinstance(error, gitops.GitError):
+        return 'Git operation failed; check repository access, filters and directory permissions'
+    # Unknown exceptions can also contain remote response bodies.
+    return type(error).__name__ + ' (details withheld to protect credentials)'
 
 
 def suggest_prepare(folder):

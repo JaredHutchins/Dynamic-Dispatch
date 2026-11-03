@@ -1,5 +1,6 @@
 """Keep personal and work details out of the repository's files."""
 import os
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -9,6 +10,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 GIT = os.environ.get("DD_TEST_GIT") or "git"
 FORBIDDEN_TERMS = (
+    "nd dispatch",
     "jaredhutchins",
     "nomaddynamics",
     "nomad ops",
@@ -52,7 +54,10 @@ def violations(root):
             continue
         for number, line in enumerate(data.splitlines(), 1):
             for term in FORBIDDEN_TERMS:
-                if (file, term) not in allowed and term.encode("ascii") in line.lower():
+                pattern = term.encode("ascii")
+                matches = (re.search(rb"\b" + pattern + rb"\b", line.lower())
+                           if term == "nd dispatch" else pattern in line.lower())
+                if (file, term) not in allowed and matches:
                     found.append(f"{file}:{number}: {term}")
     return found
 
@@ -79,6 +84,12 @@ class PersonalDetails(unittest.TestCase):
             subprocess.run([GIT, *args], cwd=root, env=env, check=True, capture_output=True)
         (root / "moved.py").unlink()
         self.assertEqual(violations(root), [])
+
+    def test_app_name_is_forbidden_in_code_and_docs_as_whole_words(self):
+        root, env = self.repository()
+        (root / 'code.py').write_text('# and dispatch handles it\n# ND Dispatch\n')
+        (root / 'README.md').write_text('Use the ND Dispatch app.\n')
+        self.assertEqual(violations(root), ['README.md:1: nd dispatch', 'code.py:2: nd dispatch'])
 
     def test_new_untracked_file_is_checked(self):
         root, env = self.repository()

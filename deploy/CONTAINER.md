@@ -237,6 +237,8 @@ login and approver, then offers to add the first project. Accept, and supply
 its repository, name and test command. It creates the Plane columns and
 labels and clones the repository. Leave the default roots at
 `/srv/dynamic-dispatch/repos` and `/srv/dynamic-dispatch/worktrees`.
+Agent logins can wait until step 6. Missing agent env files are listed after
+the project is saved; complete those logins, then run `--doctor`.
 If onboarding fails, fix the reported problem and rerun:
 
 ```sh

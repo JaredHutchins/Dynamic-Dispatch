@@ -375,11 +375,15 @@ python3 main.py --add-project
 ```
 
 Use `--config /path/to/config.json` for a different configuration. First create
-and initialise the GitHub repository, give the ND Dispatch app access, and give
-the Pi's saved HTTPS Git push login write access. The repository needs at least
+and initialise the GitHub repository, give your GitHub App access, and give
+the saved Git push login write access. The repository needs at least
 one commit. The command checks App access and permissions, the host login's read
 access, and that the repository is not empty. Read access cannot prove write
 access; confirm the push login's write permission in GitHub yourself.
+
+Agents do not need to be logged in before adding a project. Missing agent env
+files are listed after the project is saved; finish the agent login step and
+run `--doctor`. Unreadable files still stop setup with a scrubbed diagnostic.
 
 Enter the project name, `OWNER/REPO` (or its HTTPS GitHub URL), test command,
 and whether to enable sprint-pull Cycles. The test command is split into arguments;
@@ -1005,7 +1009,7 @@ gives no reset time, so the cool-down lasts `usage_limit_cooldown_minutes`.
   A missing `@github.com` makes Git ask for a username.
 - The Claude login token was made in Sept 2026 and expires about a year
   later. It lives in `/etc/dynamic-dispatch/claude.env`.
-- The GitHub App "ND Dispatch" private key lives at
+- The GitHub App private key lives at
   `~/.config/dynamic-dispatch/github-app.pem` with mode 600 and does not
   expire.
 - The Plane tokens for Orchestrator, Claude ("dispatch-claude-code-pi4")
