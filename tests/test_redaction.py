@@ -3,6 +3,7 @@
 import contextlib
 import io
 import json, os
+from unittest.mock import patch
 from dispatch import redact
 from helpers import (
     Base,
@@ -55,6 +56,18 @@ class Redaction(Base):
         redact.configure(cfg)
         text = redact.scrub("fake-orchestrator-app-secret fake-agent-app-secret fake-agent-plane-token fake-client-id")
         self.assertEqual(text, "[redacted] [redacted] [redacted] fake-client-id")
+
+    def test_missing_agent_env_is_empty_and_other_secrets_are_masked(self):
+        self.cfg['agents'][next(iter(self.cfg['agents']))]['env_file'] = str(self.tmp / 'missing.env')
+        redact.configure(self.cfg)
+        self.assertEqual(redact.read_env_values(self.tmp / 'missing.env'), [])
+        self.assertNotIn(GH, redact.scrub(GH))
+
+    def test_unreadable_agent_env_still_raises_and_config_secrets_are_masked(self):
+        with patch('builtins.open', side_effect=PermissionError(13, 'Permission denied', 'agent.env')):
+            with self.assertRaises(PermissionError):
+                redact.configure(self.cfg)
+        self.assertNotIn(GH, redact.scrub(GH))
 
     def test_scrub_longest_first(self):
         redact.set_secrets(["abcdefgh", "abcdefghijkl"])

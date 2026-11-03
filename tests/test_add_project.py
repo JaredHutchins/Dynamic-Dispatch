@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-from dispatch import add_project, config, gitops, plane, plane_apps
+from dispatch import add_project, config, gitops, plane, plane_apps, redact
 
 
 class FakePlane:
@@ -96,6 +96,49 @@ class SetupTests(unittest.TestCase):
         for secret in ('fake-secret-plane', 'fake-secret-github', 'fake-secret-agent', 'fake-installation-secret'):
             self.assertNotIn(secret, text)
         return result, text
+
+    def test_missing_agent_login_saves_project_and_lists_agent(self):
+        self.cfg['agents']['one']['env_file'] = str(self.path.parent / 'missing.env')
+        self.path.write_text(json.dumps(self.cfg))
+        result, text = self.run_setup()
+        self.assertEqual(result, 0, text)
+        self.assertIn("Agent isn't logged in yet: do the agent login step, then run --doctor.", text)
+        self.assertIn('Example', config.load(self.path)['projects'])
+
+    def test_unreadable_agent_login_names_file_and_reason(self):
+        env = self.path.parent / 'agent.env'
+        env.write_text('MODEL_TOKEN=fake-model-secret')
+        self.cfg['agents']['one']['env_file'] = str(env)
+        self.path.write_text(json.dumps(self.cfg))
+        original = self.path.read_bytes()
+        with patch.object(redact, 'read_env_values', side_effect=PermissionError(13, 'Permission denied', str(env))):
+            result, text = self.run_setup()
+        self.assertEqual(result, 1)
+        self.assertIn(str(env), text)
+        self.assertIn('Permission denied', text)
+        self.assertEqual(self.path.read_bytes(), original)
+
+    def test_config_cause_is_scrubbed_before_masking_is_configured(self):
+        redact.set_secrets([])
+        with patch.object(config, 'load', side_effect=config.ConfigError(
+                'Invalid setting containing fake-secret-plane')):
+            result, text = self.run_setup()
+        self.assertEqual(result, 1)
+        self.assertIn('Invalid setting containing [redacted]', text)
+
+    def test_remote_reply_body_is_never_printed(self):
+        self.mocks['plane.Plane'].side_effect = plane.PlaneError('unregistered API reply body')
+        result, text = self.run_setup()
+        self.assertEqual(result, 1)
+        self.assertIn('Plane request failed', text)
+        self.assertNotIn('unregistered API reply body', text)
+
+    def test_missing_config_names_file_and_reason(self):
+        self.path.unlink()
+        result, text = self.run_setup()
+        self.assertEqual(result, 1)
+        self.assertIn(str(self.path), text)
+        self.assertIn('No such file', text)
 
     def test_prepare_suggestions_are_confirmed_edited_or_skipped_and_saved(self):
         with patch.object(add_project, 'suggest_prepare', return_value=[

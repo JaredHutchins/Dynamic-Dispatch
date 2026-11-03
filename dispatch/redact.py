@@ -27,9 +27,6 @@ def configure(cfg):
              cfg["github"].get("token")]
     for agent_cfg in cfg["agents"].values():
         found.extend([agent_cfg.get("plane_token"), _bot_secret(agent_cfg.get("plane_bot"))])
-        env_file = agent_cfg.get("env_file")
-        if env_file:
-            found.extend(read_env_values(env_file))
     alerts = cfg.get("alerts")
     alert_secrets = []
     if isinstance(alerts, dict):
@@ -39,6 +36,10 @@ def configure(cfg):
             alert_secrets.extend(devices)
         alert_secrets = [value for value in alert_secrets if isinstance(value, str) and value]
     set_secrets(found + alert_secrets)
+    for agent_cfg in cfg["agents"].values():
+        if agent_cfg.get("env_file"):
+            for value in read_env_values(agent_cfg["env_file"]):
+                add_secret(value)
     for project in cfg.get('projects', {}).values():
         add_test_secrets(project)
 
@@ -64,9 +65,13 @@ def add_secret(value, minimum_length=MIN_SECRET_LENGTH):
 
 
 def read_env_values(path):
-    """Values from a KEY=VALUE file. Raises OSError if it can't be read."""
+    """Values from a KEY=VALUE file; a missing login has nothing to mask yet."""
     values = []
-    with open(path) as f:
+    try:
+        source = open(path)
+    except FileNotFoundError:
+        return []
+    with source as f:
         for line in f:
             line = line.strip()
             if not line or line.startswith("#") or "=" not in line:
