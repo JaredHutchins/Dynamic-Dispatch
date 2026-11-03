@@ -29,7 +29,7 @@ class HttpErrors(unittest.TestCase):
         calls = (
             lambda: helpers.real_gh_request('GET', '/test', 'fake-token'),
             lambda: helpers.real_plane_request(client, 'GET', '/test'),
-            lambda: plane_apps._fetch('https://plane.invalid', bot),
+            lambda: plane_apps._fetch('https://plane.invalid', bot, plane_apps.AGENT_SCOPES),
         )
         for call in calls:
             with self.subTest(call=call):

@@ -71,9 +71,11 @@ def _description_html(text):
 
 
 class PlaneError(Exception):
-    def __init__(self, message, status=None):
+    def __init__(self, message, status=None, sign_in_refused=None):
         super().__init__(message)
         self.status = status
+        # When Plane refused a Plane app's sign-in: the OAuth error word it gave, or "" for none.
+        self.sign_in_refused = sign_in_refused
 
 
 def state_id(issue):
@@ -85,12 +87,13 @@ def state_id(issue):
 
 
 class Plane:
-    """A Plane login: a personal API token, or a Plane app (bot) given as bot."""
+    """A Plane login: a personal API token, or a Plane app (bot) given as bot with the scopes it was installed with."""
 
-    def __init__(self, base_url, workspace_slug, token, name="Plane login", *, bot=None):
+    def __init__(self, base_url, workspace_slug, token, name="Plane login", *, bot=None, scopes=()):
         self.name = name
         self.origin = base_url
         self.bot = bot
+        self.scopes = scopes
         identity = plane_apps.identity(base_url, bot) if bot else logins.fingerprint(base_url + token)
         self.login_key = "plane:" + identity
         self.api = f"{base_url.rstrip('/')}/api/v1"
@@ -100,13 +103,15 @@ class Plane:
 
     def _bot_token(self, stale=None):
         try:
-            return plane_apps.token(self.origin, self.bot, stale=stale)
+            return plane_apps.token(self.origin, self.bot, self.scopes, stale=stale)
         except plane_apps.BotLoginError as e:
-            # Plane answers a bad client, secret or installation with 400 or 401.
-            if e.status in (400, 401, 403):
+            # Plane answers a bad client, secret, installation or scope with 400 or 401.
+            refused = e.status in (400, 401, 403)
+            if refused:
                 logins.login(self.login_key, self.name, f"Plane app token request (HTTP {e.status})", True)
             # Keeps a network failure as the cause, so doctor can tell it from a rejection.
-            raise PlaneError(str(e), status=e.status) from e.__cause__
+            raise PlaneError(str(e), status=e.status,
+                             sign_in_refused=(e.error or "") if refused else None) from e.__cause__
 
     def _build(self, method, url, data, bearer):
         headers = {"Authorization": f"Bearer {bearer}"} if self.bot else {"X-API-Key": self.token}
@@ -431,13 +436,14 @@ def orchestrator_login(cfg):
     """The Orchestrator's client, without starting assignment discovery, for setup and doctor."""
     p = cfg["plane"]
     return Plane(api_url(p), p["workspace_slug"], p.get("orchestrator_token"), "Plane login for Orchestrator",
-                 bot=p.get("orchestrator_bot"))
+                 bot=p.get("orchestrator_bot"), scopes=plane_apps.ORCHESTRATOR_SCOPES)
 
 
 def as_agent(cfg, agent_cfg):
     p = cfg["plane"]
     return Plane(api_url(p), p["workspace_slug"], agent_cfg.get("plane_token"),
-                 "Plane login for " + agent_cfg.get("display_name", "agent"), bot=agent_cfg.get("plane_bot"))
+                 "Plane login for " + agent_cfg.get("display_name", "agent"), bot=agent_cfg.get("plane_bot"),
+                 scopes=plane_apps.AGENT_SCOPES)
 
 
 def assign_story(cfg, orch, project_id, issue_id, agent, run_id, start_date=None,

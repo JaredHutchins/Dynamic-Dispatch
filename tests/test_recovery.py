@@ -635,8 +635,9 @@ class RetryPullRequest(Base):
     def test_has_commits_beyond_base_does_not_fetch(self):
         self.block_at_pr()
         known = git("rev-parse", "refs/remotes/origin/main", cwd=self.repo)
-        # Merged on GitHub, but not yet fetched here.
-        git("push", str(self.origin), "dd-7:refs/heads/main", cwd=self.repo)
+        # Merged on GitHub, but not yet fetched here. Moved inside the origin itself,
+        # not pushed from this clone, so no Git version can update its origin/main.
+        git("update-ref", "refs/heads/main", "refs/heads/dd-7", cwd=self.origin)
         self.assertTrue(gitops.has_commits_beyond_base(str(self.repo), "dd-7", "main"))
         self.assertEqual(git("rev-parse", "refs/remotes/origin/main", cwd=self.repo), known)
 

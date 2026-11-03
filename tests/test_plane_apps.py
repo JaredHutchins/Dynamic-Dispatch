@@ -7,7 +7,9 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest import mock
-from urllib.parse import parse_qs
+from urllib.error import HTTPError
+from urllib.parse import parse_qs, urlencode
+from urllib.request import Request
 
 import helpers
 import main
@@ -72,7 +74,7 @@ class Tokens(AppCase):
         self.assertEqual(token.get_header('Content-type'), 'application/x-www-form-urlencoded')
         self.assertEqual(parse_qs(token.data.decode(), keep_blank_values=True),
                          {'grant_type': ['client_credentials'], 'app_installation_id': ['fake-installation'],
-                          'scope': ['']})
+                          'scope': [' '.join(plane_apps.ORCHESTRATOR_SCOPES)]})
         self.assertEqual(me.full_url, 'https://api.plane.so/api/v1/users/me/')
         self.assertEqual(me.get_header('Authorization'), 'Bearer ' + TOKENS[0])
         self.assertIsNone(me.get_header('X-api-key'))
@@ -150,6 +152,63 @@ class Tokens(AppCase):
         (req,) = self.requests()
         self.assertEqual(req.get_header('X-api-key'), 'fake-personal-token')
         self.assertIsNone(req.get_header('Authorization'))
+
+
+class CloudTokenEndpoint(AppCase):
+    """Against a fake that, like Plane Cloud, grants only the scopes each app was installed with."""
+
+    def setUp(self):
+        super().setUp()
+        self.installs = {SECRET: (plane_apps.ORCHESTRATOR_SCOPES, TOKENS[0]),
+                         AGENT_SECRET: (plane_apps.AGENT_SCOPES, TOKENS[1])}
+
+        def urlopen(req, timeout=None):
+            if req.full_url.endswith('/auth/o/token/'):
+                return helpers.fake_plane_app_token(self, req, self.installs)
+            return io.BytesIO(json.dumps({'id': 'fake-' + req.get_header('Authorization')[7:]}).encode())
+        self.urlopen.side_effect = urlopen
+
+    def scope(self, req):
+        return parse_qs(req.data.decode())['scope'][0].split()
+
+    def test_each_identity_asks_for_its_install_scopes_and_signs_in(self):
+        cfg = config()
+        for client, scopes, access in ((plane.orchestrator_login(cfg), plane_apps.ORCHESTRATOR_SCOPES, TOKENS[0]),
+                                       (plane.as_agent(cfg, cfg['agents']['claude-code']), plane_apps.AGENT_SCOPES,
+                                        TOKENS[1])):
+            with self.subTest(scopes=scopes):
+                self.urlopen.reset_mock()
+                self.assertEqual(client.current_user(), 'fake-' + access)
+                token, _ = self.requests()
+                self.assertEqual(self.scope(token), list(scopes))
+
+    def test_fake_refuses_like_plane_cloud(self):
+        basic = 'Basic ' + base64.b64encode(f'fake-agent-client:{AGENT_SECRET}'.encode()).decode()
+        # Missing, empty, and beyond what the agent's app was installed with.
+        for scope in ({}, {'scope': ''}, {'scope': ' '.join(plane_apps.ORCHESTRATOR_SCOPES)}):
+            with self.subTest(scope=scope):
+                data = urlencode({'grant_type': 'client_credentials', **scope}).encode()
+                req = Request('https://api.plane.so/auth/o/token/', data=data, headers={'Authorization': basic})
+                with self.assertRaises(HTTPError) as error:
+                    helpers.fake_plane_app_token(self, req, self.installs)
+                self.assertEqual(error.exception.code, 400)
+                self.assertEqual(json.loads(error.exception.read())['error'], 'invalid_scope')
+
+    def test_a_refused_scope_names_the_error_word_only(self):
+        self.installs[AGENT_SECRET] = (('profile:read',), TOKENS[1])
+        cfg = config()
+        with self.assertRaises(plane.PlaneError) as error:
+            plane.as_agent(cfg, cfg['agents']['claude-code']).current_user()
+        self.assertEqual((error.exception.status, error.exception.sign_in_refused), (400, 'invalid_scope'))
+        reason = doctor.service_reason(error.exception, 'Plane', 'Plane agent app login', 'fallback',
+                                       "Claude's Plane app")
+        self.assertEqual(reason, "Claude's Plane app sign-in was refused (Plane said: invalid_scope); "
+                                 "check its Client ID, Client Secret and Installation ID.")
+
+    def test_a_token_request_never_goes_without_scopes(self):
+        with self.assertRaises(ValueError):
+            plane_apps.token('https://api.plane.so', BOT, ())
+        self.urlopen.assert_not_called()
 
 
 class RejectedLogin(AppCase):
@@ -270,15 +329,16 @@ class DoctorCheck(AppCase):
             doctor.run()
         return out.getvalue()
 
-    def route(self, rejected=()):
+    def route(self, rejected=(), scopes=None):
+        """Plane Cloud's replies; an app in rejected is unknown to Plane, and scopes replaces the agent's install."""
+        installs = {SECRET: (plane_apps.ORCHESTRATOR_SCOPES, 'fake-orchestrator-access-token'),
+                    AGENT_SECRET: (scopes or plane_apps.AGENT_SCOPES, 'fake-agent-access-token')}
+        for who in rejected:
+            del installs[SECRET if who == 'orchestrator' else AGENT_SECRET]
+
         def urlopen(req, timeout=None):
             if req.full_url.endswith('/auth/o/token/'):
-                who = 'agent' if AGENT_SECRET.encode() in base64.b64decode(req.get_header('Authorization')[6:]) \
-                    else 'orchestrator'
-                if who in rejected:
-                    raise self.response('app_login_rejected')
-                return io.BytesIO(json.dumps({'access_token': f'fake-{who}-access-token', 'token_type': 'Bearer',
-                                              'expires_in': 36000}).encode())
+                return helpers.fake_plane_app_token(self, req, installs)
             return io.BytesIO(json.dumps({'id': 'fake-' + req.get_header('Authorization')[7:]}).encode())
         self.urlopen.side_effect = urlopen
 
@@ -290,16 +350,26 @@ class DoctorCheck(AppCase):
         self.assert_no_secret(out)
         self.assertNotIn('access-token', out)
 
-    def test_a_rejected_bot_fails(self):
-        for who, line in (('orchestrator', 'FAIL Plane Orchestrator: Plane Orchestrator app login was rejected'),
-                          ('agent', 'FAIL Plane agent 1: Plane agent app login was rejected')):
+    def test_a_refused_bot_names_the_error_word(self):
+        check = "; check its Client ID, Client Secret and Installation ID."
+        for who, line in (('orchestrator', "FAIL Plane Orchestrator: Dynamic Dispatch's Plane app sign-in was "
+                                           "refused (Plane said: invalid_client)" + check),
+                          ('agent', "FAIL Plane agent 1: This agent's Plane app sign-in was refused "
+                                    "(Plane said: invalid_client)" + check)):
             with self.subTest(who=who):
                 self.enterContext(mock.patch.object(plane_apps, '_tokens', {}))
                 self.route(rejected=(who,))
                 out = self.run_doctor()
                 self.assertIn(line, out)
                 self.assert_no_secret(out)
-                self.assertNotIn('invalid_client', out)
+                self.assertNotIn('address and workspace slug', out)
+                self.assertNotIn('refused fake', out)
+
+    def test_a_refused_scope_is_named(self):
+        self.route(scopes=('profile:read',))
+        out = self.run_doctor()
+        self.assertIn("FAIL Plane agent 1: This agent's Plane app sign-in was refused (Plane said: invalid_scope)", out)
+        self.assertNotIn('projects.work_items', out)
 
 
 if __name__ == '__main__':
