@@ -52,6 +52,9 @@ class Services:
         # Permissions for the next installation tokens issued, before falling back to self.permissions.
         self.grants = []
         self.issued = 0
+        # Each project's members as Plane lists them, or an HTTP status to refuse the list with.
+        self.members = {}
+        self.member_error = None
 
     def refuse(self, url, code, credential):
         return http_error(self.test, url, code, 'refused', {}, io.BytesIO(f'bad credential {credential}'.encode()))
@@ -66,10 +69,17 @@ class Services:
                 raise self.refuse(url, 401, token)
             if url == self.plane_api + '/api/v1/users/me/':
                 return Response({'id': USERS[token]})
-            if url.startswith(self.plane_api + '/api/v1/workspaces/workspace/projects/'):
+            projects = self.plane_api + '/api/v1/workspaces/workspace/projects/'
+            if url.startswith(projects):
                 if token == APPS[CLAUDE_APP]:
                     raise self.refuse(url, 403, token)
-                return Response({'results': [], 'next_page_results': False})
+                project, _, rest = url.removeprefix(projects).partition('/')
+                if not project.startswith('?'):
+                    self.test.assertTrue(rest.startswith('members/'), url)
+                    if self.member_error:
+                        raise self.refuse(url, self.member_error, token)
+                    return Response(self.members[project])
+                return Response({'results': [{'id': name} for name in self.members], 'next_page_results': False})
             raise self.refuse(url, 404, token)
         credential = request.get_header('Authorization').removeprefix('Bearer ')
         if url.endswith('/app/installations/42/access_tokens'):
@@ -458,6 +468,105 @@ class SetupTests(unittest.TestCase):
 
     def saved(self):
         return json.loads(self.progress.read_text())['config']
+
+    def plane_section(self, answers):
+        """Answer only setup's Plane questions; the stop at GitHub's first one keeps them as saved answers."""
+        result, terminal, *_ = self.run_setup(answers)
+        self.assertEqual(result, 1)
+        self.assertTrue(terminal.prompts[-1].startswith('Use a GitHub App'), terminal.prompts[-1])
+        return self.saved()['plane'], terminal
+
+    def test_a_pasted_workspace_address_is_split_into_site_and_slug(self):
+        saved, terminal = self.plane_section([PLANE + '/workspace/projects/p1/issues/', '', '', 'no', ORCH, ''])
+        self.assertEqual(saved['base_url'], PLANE)
+        self.assertEqual(saved['workspace_slug'], 'workspace')
+        self.assertIn(f'Plane API address (Cloud: web https://app.plane.so, API https://api.plane.so) [{PLANE}]: ',
+                      terminal.prompts)
+        self.assertIn('Plane workspace slug (the first part of the path in any Plane page) [workspace]: ',
+                      terminal.prompts)
+
+    def test_a_plain_site_address_is_unchanged(self):
+        self.services = Services(self, 'https://api.plane.so')
+        saved, terminal = self.plane_section(['https://app.plane.so/', '', 'workspace', 'no', ORCH, ''])
+        self.assertEqual(saved['base_url'], 'https://app.plane.so')
+        self.assertEqual(terminal.prompts[0],
+                         'Plane address (just the site, e.g. https://app.plane.so for Plane Cloud): ')
+        self.assertIn('Plane workspace slug (the first part of the path in any Plane page): ', terminal.prompts)
+
+    def people(self):
+        """Two projects sharing members, including DD's own login and Claude's."""
+        approver = {'id': APPROVER_ID, 'display_name': 'Pat Approver', 'email': 'pat@example.com'}
+        dd = {'id': 'user-orchestrator', 'display_name': 'Dynamic Dispatch', 'email': 'dd@example.com'}
+        claude = {'id': 'user-claude', 'first_name': 'Claude', 'last_name': 'Agent', 'email': 'claude@example.com'}
+        other = {'id': '0f1e2d3c-0000-4000-8000-000000000002', 'display_name': 'Alex Other', 'email': ''}
+        # Some Plane versions nest the user under the membership.
+        self.services.members = {'p1': [approver, dd], 'p2': {'results': [{'member': approver}, claude, other],
+                                                                'next_page_results': False}}
+
+    def test_the_approver_is_picked_from_the_people_in_the_projects(self):
+        self.people()
+        saved, terminal = self.plane_section([PLANE, '', 'workspace', 'no', ORCH, '9', '1'])
+        self.assertEqual(saved['approver_user_id'], '0f1e2d3c-0000-4000-8000-000000000002')
+        out = self.output.getvalue()
+        # Numbered by name, once each, with nobody hidden; DD's login is labelled.
+        listed = [line for line in out.splitlines() if line[:1].isdigit()]
+        self.assertEqual(listed, ['1. Alex Other', '2. Claude Agent <claude@example.com>',
+                                  "3. Dynamic Dispatch <dd@example.com> (Dynamic Dispatch's login)",
+                                  '4. Pat Approver <pat@example.com>'])
+        self.assertIn('Who approves Cycle plans? Number, or Enter to skip: ', terminal.prompts)
+        self.assertIn('Enter a number from 1 to 4.', out)
+
+    def test_enter_skips_the_approver_when_none_is_saved(self):
+        self.people()
+        saved, _ = self.plane_section([PLANE, '', 'workspace', 'no', ORCH, ''])
+        self.assertNotIn('approver_user_id', saved)
+
+    def test_a_rerun_labels_agents_and_enter_keeps_the_approver(self):
+        self.run_setup(self.first_answers())
+        original = self.path.read_bytes()
+        self.people()
+        result, terminal, _, _ = self.run_setup([''] * 25)
+        self.assertEqual(result, 0)
+        self.assertEqual(self.path.read_bytes(), original)
+        self.assertIn('Who approves Cycle plans? [currently: Pat Approver] '
+                      'Number, Enter keeps it, or type none to remove: ', terminal.prompts)
+        out = self.output.getvalue()
+        self.assertIn('2. Claude Agent <claude@example.com> (agent: Claude)', out)
+        self.assertIn("3. Dynamic Dispatch <dd@example.com> (Dynamic Dispatch's login)", out)
+        self.assert_no_secret_leaked()
+
+    def test_none_removes_the_saved_approver(self):
+        self.run_setup(self.first_answers())
+        self.people()
+        answers = [''] * 25
+        answers[5] = 'none'
+        self.assertEqual(self.run_setup(answers)[0], 0)
+        self.assertNotIn('approver_user_id', json.loads(self.path.read_text())['plane'])
+
+    def test_with_nobody_to_list_the_approver_id_is_typed(self):
+        saved, terminal = self.plane_section([PLANE, '', 'workspace', 'no', ORCH, 'not-an-id', APPROVER_ID])
+        self.assertEqual(saved['approver_user_id'], APPROVER_ID)
+        out = self.output.getvalue()
+        self.assertIn("Setup can't see anyone in the workspace's projects yet", out)
+        self.assertIn(f'{PLANE}/workspace/profile/<user ID>', out)
+        self.assertIn('A Plane user ID looks like', out)
+        self.assertIn("Approver's Plane user ID for Cycle plans? Enter to skip: ", terminal.prompts)
+
+    def test_an_unreadable_member_list_falls_back_to_typing_with_enter_and_none(self):
+        self.run_setup(self.first_answers())
+        self.people()
+        self.services.member_error = 403
+        answers = [''] * 25
+        result, terminal, _, _ = self.run_setup(answers)
+        self.assertEqual(result, 0)
+        self.assertIn("Setup couldn't read the workspace's project members", self.output.getvalue())
+        self.assertIn(f"Approver's Plane user ID for Cycle plans? [currently: {APPROVER_ID}] "
+                      "Enter keeps it, or type none to remove: ", terminal.prompts)
+        self.assertEqual(json.loads(self.path.read_text())['plane']['approver_user_id'], APPROVER_ID)
+        answers[5] = 'none'
+        self.assertEqual(self.run_setup(answers)[0], 0)
+        self.assertNotIn('approver_user_id', json.loads(self.path.read_text())['plane'])
+        self.assert_no_secret_leaked()
 
     def test_a_stop_during_plane_saves_nothing(self):
         result, *_ = self.run_setup(self.first_answers()[:9])

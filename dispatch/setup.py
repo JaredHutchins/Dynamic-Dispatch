@@ -154,31 +154,115 @@ def _plane_identity(settings, who, bot_key, token_key):
     return f"{who}'s Plane app ({bot_key})" if bot else f"{who}'s Plane token"
 
 
+def _site(url):
+    """The site part of a pasted Plane address, and the workspace slug its path starts with, if any."""
+    parts = urlsplit(url)
+    first = next((part for part in parts.path.split('/') if part), None)
+    if first is None:
+        return url, None
+    return f'{parts.scheme}://{parts.netloc}', first if re.fullmatch(r'[\w-]+', first) else None
+
+
 def _plane(cfg):
     """Ask for Plane's settings until the Orchestrator's login works; returns its Plane user ID."""
     p = cfg.setdefault('plane', {})
     while True:
-        url = _ask('Plane address, as you open it in a browser', p.get('base_url'), check=_url)
+        url = _ask('Plane address (just the site, e.g. https://app.plane.so for Plane Cloud)',
+                   p.get('base_url'), check=_url)
+        # A workspace page's address is what people copy; its first path part is the slug.
+        slug = None
+        if url != _text(p.get('base_url')):
+            url, slug = _site(url)
         p['base_url'] = _keep(p.get('base_url'), url.rstrip('/'), url)
         api = _ask('Plane API address (Cloud: web https://app.plane.so, API https://api.plane.so)',
                    p.get('api_url') or (PLANE_CLOUD_API if _plane_cloud(url) else p['base_url']), check=_url)
         if 'api_url' in p or api.rstrip('/') != url.rstrip('/'):
             p['api_url'] = _keep(p.get('api_url'), api.rstrip('/'), api)
         p['workspace_slug'] = _ask('Plane workspace slug (the first part of the path in any Plane page)',
-                                   p.get('workspace_slug'),
+                                   slug or p.get('workspace_slug'),
                                    check=_matches(r'[\w-]+', 'Enter the slug alone, without slashes.'))
         who = _plane_identity(p, 'The Orchestrator', 'orchestrator_bot', 'orchestrator_token')
         try:
-            user = _plane_user(plane.orchestrator_login(cfg), who, "Dynamic Dispatch's Plane app")
+            client = plane.orchestrator_login(cfg)
+            user = _plane_user(client, who, "Dynamic Dispatch's Plane app")
             break
         except Invalid as error:
             print(error)
-    approver = _ask("Approver's Plane user ID (needed only for sprint-pull; Enter skips)",
-                    p.get('approver_user_id'), optional=True,
-                    check=_matches(UUID, 'A Plane user ID looks like 0f1e2d3c-0000-0000-0000-000000000000.'))
-    if approver:
-        p['approver_user_id'] = approver
+    _approver(cfg, client, user)
     return user
+
+
+def _people(client):
+    """Everyone in the workspace's projects, by Plane user ID, read with the Orchestrator's own permissions."""
+    people = {}
+    for project in client.projects():
+        for member in client.members(project['id']):
+            # Some Plane versions nest the user under the membership.
+            person = member['member'] if isinstance(member.get('member'), dict) else member
+            name = (person.get('display_name') or
+                    ' '.join(filter(None, (person.get('first_name'), person.get('last_name')))) or
+                    person.get('email') or person['id'])
+            people.setdefault(person['id'], (name, person.get('email') or ''))
+    return people
+
+
+def _known(cfg, orchestrator):
+    """Labels for the accounts setup already knows, so the list says who they are without hiding them."""
+    known = {orchestrator: "(Dynamic Dispatch's login)"}
+    for agent in cfg.get('agents', {}).values():
+        who = agent.get('display_name') or 'agent'
+        try:
+            known.setdefault(plane.as_agent(cfg, agent).current_user(), f'(agent: {who})')
+        except Exception:
+            # An agent whose login fails here is asked about later; its label is only a help.
+            pass
+    return known
+
+
+def _approver_answer(label, current, check, pick=lambda value: value):
+    """The approver's Plane user ID: Enter keeps current (or skips), and none removes it."""
+    value = _ask(label, optional=True, check=lambda v: v.lower() == 'none' or check(v))
+    if value.lower() == 'none':
+        return None
+    return pick(value) if value else current
+
+
+def _approver(cfg, client, orchestrator):
+    """Ask who approves Cycle plans, from the people the Orchestrator can see, saving their Plane user ID."""
+    p = cfg['plane']
+    current = p.get('approver_user_id')
+    try:
+        people = _people(client)
+    except Exception:
+        people = None
+    if people:
+        known = _known(cfg, orchestrator)
+        ids = sorted(people, key=lambda i: (people[i][0].lower(), people[i][1].lower(), i))
+        for number, user_id in enumerate(ids, 1):
+            name, email = people[user_id]
+            print(' '.join(filter(None, (f'{number}. {name}', email and f'<{email}>', known.get(user_id)))))
+        name = people[current][0] if current in people else current
+
+        def check(value):
+            if not (value.isdigit() and 1 <= int(value) <= len(ids)):
+                raise Invalid(f'Enter a number from 1 to {len(ids)}.')
+        how = 'Number, Enter keeps it, or type none to remove' if current else 'Number, or Enter to skip'
+        chosen = _approver_answer('Who approves Cycle plans?' + (f' [currently: {name}]' if current else '')
+                                  + ' ' + how, current, check, lambda value: ids[int(value) - 1])
+    else:
+        print("Setup can't see anyone in the workspace's projects yet, so type the approver's Plane user ID."
+              if people == {} else "Setup couldn't read the workspace's project members, so type the "
+              "approver's Plane user ID.")
+        print(f"It ends the address of their profile page in Plane: "
+              f"{p['base_url'].rstrip('/')}/{p['workspace_slug']}/profile/<user ID>")
+        how = 'Enter keeps it, or type none to remove' if current else 'Enter to skip'
+        chosen = _approver_answer("Approver's Plane user ID for Cycle plans?" +
+                                  (f' [currently: {current}]' if current else '') + f' {how}', current,
+                                  _matches(UUID, 'A Plane user ID looks like 0f1e2d3c-0000-0000-0000-000000000000.'))
+    if chosen:
+        p['approver_user_id'] = chosen
+    else:
+        p.pop('approver_user_id', None)
 
 
 def _key_file(value):

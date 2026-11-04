@@ -91,16 +91,16 @@ Run this as DD's account from the checkout, without sudo:
 
 Have these ready first; setup tells you where to make them but makes none:
 
-- The Plane web and API addresses and workspace slug, and a personal token
-  or installed app's client ID, client secret and installation ID for each
-  identity. See [Set up Plane Cloud](PLANE_CLOUD.md) for creating bots.
-  Setup offers Cloud's API address separately from its web address.
+- The Plane site address (for Plane Cloud, `https://app.plane.so`) and
+  workspace slug, and a personal token or installed app's client ID, client
+  secret and installation ID for each identity. See
+  [Set up Plane Cloud](PLANE_CLOUD.md) for creating bots. Setup offers
+  Cloud's API address separately from its web address.
 - A GitHub App for DD with contents read, pull requests write and commit
   statuses write, installed on your repositories, and its private key saved
   on this machine with `chmod 600`. A fine-grained token works instead, but
   `--add-project` needs the App.
-- The approver's GitHub username, and their Plane user ID if you will use
-  sprint-pull.
+- The approver's GitHub username.
 
 Setup asks which agents the installer set up (`claude`, `codex`, `gemini`)
 and checks each answer as it is given: the Plane address and the
@@ -110,6 +110,23 @@ signs in with the permissions above (or the token works) and the approver's
 GitHub account exists. A
 failed check says what to fix, never the secret, and asks again. Secrets are
 typed hidden and are written only to `config.json`, with mode 600.
+
+The Plane address question wants just the site, but a workspace address
+copied from the browser works too: for `https://app.plane.so/my-workspace/`
+or any deeper page in it, setup keeps `https://app.plane.so` as the address
+and offers `my-workspace` as the workspace slug. Once the Orchestrator's login
+works, setup asks who approves Cycle plans (needed only for sprint-pull). It
+lists, numbered, everyone in the workspace's projects with their display name
+and email, once each; it hides nobody, but labels DD's own login "(Dynamic
+Dispatch's login)" and, on a rerun, each configured agent, such as "(agent:
+Claude)". Type the approver's number and setup saves their Plane user ID as
+`plane.approver_user_id`. With no approver saved, Enter skips; with one
+saved, the prompt shows who it is, Enter keeps them and `none` removes them.
+The list uses only reads the Orchestrator is already allowed to make. If
+setup can see nobody (no projects yet) or can't read the members, it says so
+and asks for the Plane user ID instead, with the same Enter and `none`
+behaviour; the ID ends the address of the person's profile page in Plane,
+`https://PLANE/WORKSPACE/profile/USER_ID`.
 
 Setup writes `config.json` only once, when it finishes, so DD never sees a
 half-finished one. Until then it keeps your answers in
