@@ -1199,11 +1199,13 @@ without copying credentials or error output. They work even when Plane is
 unavailable. Each login alerts once until it succeeds and fails again; this
 state survives DD restarts. Git push uses the shared host login described above.
 
-DD checks `github.token` once per UTC day in the background, even when PRs use
-a GitHub App. GitHub's expiry header triggers one alert at each of 30, 7 and 1
-days remaining. If DD first sees a token already inside several thresholds,
-it sends each crossed threshold once. A missing token, unreadable expiry or
-network failure records at most one daily system warning event (no story).
+When PRs use `github.token` rather than a GitHub App, DD checks its expiry
+once per UTC day in the background. GitHub's expiry header triggers one alert
+at each of 30, 7 and 1 days remaining. If DD first sees a token already inside
+several thresholds, it sends each crossed threshold once. An unreadable expiry
+or network failure records at most one daily system warning event (no story).
+With a GitHub App, or no `github.token`, DD skips this check and logs nothing
+about it; App installation tokens renew themselves.
 These checks never hold up stories. Claude and Plane expiry are not checked.
 
 Keep phone sounds enabled for Bark's active notifications. Without configured

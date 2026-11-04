@@ -108,7 +108,7 @@ def read(path=None):
     """config.json's contents, unchecked, once it is shown to be private."""
     path = Path(path or DEFAULT_CONFIG_PATH)
     if not path.exists():
-        raise ConfigError(f"No config at {path}. Copy config.example.json and fill it in.")
+        raise ConfigError(f"no config at {path}. Run python3 main.py --setup to create it.")
     _require_private(path)
     with open(path) as f:
         return json.load(f)

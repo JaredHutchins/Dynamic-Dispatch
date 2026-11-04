@@ -191,8 +191,10 @@ dc logs --tail=50 dd
 
 First start clones public DD `main` into `/home/dd/checkout`; the image does
 not contain your host checkout or config. Wait for the clone and installer
-to finish (check logs again). Missing config failures are expected now.
-Stop the service while setting it up, so it cannot begin processing stories:
+to finish (check logs again). Until setup writes `config.json`, the logs say
+`Waiting for setup: no config at /home/dd/config/config.json` once and DD
+checks again about once a minute; this is not a failed start, so it never
+trips crash recovery. Stop the service while setting it up, so it cannot begin processing stories:
 
 ```sh
 dc stop dd
@@ -419,9 +421,7 @@ only by that agent. Resolve every FAIL before continuing. Install any
 project-specific test tools before handing it stories; the supplied image
 has only the tools listed above.
 
-If the first starts reached recovery's failure limit, follow the latch reset
-in troubleshooting before starting. Ignore any systemd start command printed
-by setup; in this installation use:
+Ignore any systemd start command printed by setup; in this installation use:
 
 ```sh
 dc start dd
@@ -562,5 +562,5 @@ dc start dd
 dc logs --tail=50 dd
 ```
 
-This forgets the recorded last-good version too. Use it after initial setup
-if missing config caused the failures, not as a way to hide repeated crashes.
+This forgets the recorded last-good version too. Use it once the cause is
+fixed, not as a way to hide repeated crashes.

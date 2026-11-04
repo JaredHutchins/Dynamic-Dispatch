@@ -5,7 +5,8 @@ As root it fixes the volumes' owners, clones DD on first start, lets the
 installed rollback helper recover from a crash loop, re-runs the checkout's
 installer for the agents the image includes and hands a mounted Gemini
 credential to Gemini's account. Then it drops to DD's account for good and runs
-DD once; Docker starts the container again when DD exits.
+DD once, after waiting for guided setup's config.json on a first start; Docker
+starts the container again when DD exits.
 """
 
 import json
@@ -45,6 +46,7 @@ FAILURES, WINDOW, RESTART_DELAY = 3, 300, 10
 UPDATE_EXIT = 75  # DD's self-update restart, which is planned rather than a failure
 DOWN = 3  # the decision's exit code while recovery is latched off
 DOWN_POLL = 60
+SETUP_POLL = 60
 
 
 def included_agents():
@@ -171,6 +173,28 @@ def wait_while_down():
         raise RuntimeError('Could not decide whether DD needs rolling back')
 
 
+def wait_for_setup(stopping):
+    """As DD: True once config.json exists, False if a stop comes first.
+
+    Guided setup writes config.json only when it finishes, keeping partial answers
+    in a separate progress file, so config.json existing means setup is done.
+    Waiting is never a failed start, so crash recovery can't latch off before setup.
+    """
+    config = CONFIG / 'config.json'
+    reported = False
+    while not config.exists():
+        if not reported:
+            print(f'Waiting for setup: no config at {config}. Run guided setup (deploy/CONTAINER.md, step 5).',
+                  flush=True)
+            reported = True
+        # One-second naps, so a stop is answered within Docker's grace period.
+        for _ in range(SETUP_POLL):
+            if stopping():
+                return False
+            time.sleep(1)
+    return True
+
+
 def drop_to_dd(account):
     os.initgroups(DD_USER, account.pw_gid)
     os.setgid(account.pw_gid)
@@ -221,6 +245,8 @@ def supervise():
 
     for signum in (signal.SIGTERM, signal.SIGINT):
         signal.signal(signum, stop)
+    if not wait_for_setup(lambda: stopped):
+        return 0
     with subprocess.Popen([PYTHON, 'main.py', '--config', str(CONFIG / 'config.json')],
                           cwd=CHECKOUT) as child:
         if stopped:

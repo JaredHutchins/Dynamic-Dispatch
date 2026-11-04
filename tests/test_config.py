@@ -1,6 +1,6 @@
 """Tests for config."""
 
-import json, os, stat, sys, unittest
+import io, json, os, stat, sys, unittest
 from unittest import mock
 from dispatch import agents, config, redact
 import main as dd_main
@@ -379,6 +379,14 @@ class Config(unittest.TestCase):
              mock.patch.object(config, "check_env_files", side_effect=config.ConfigError("can be read by")), \
              mock.patch.object(sys, "argv", ["main.py", "--once"]):
             self.assertEqual(dd_main.main(), 1)
+
+    def test_main_says_how_to_create_a_missing_config(self):
+        path = temporary_directory(self) / "config.json"
+        with mock.patch.object(sys, "argv", ["main.py", "--once", "--config", str(path)]), \
+             mock.patch.object(sys, "stderr", new_callable=io.StringIO) as stderr:
+            self.assertEqual(dd_main.main(), 1)
+        self.assertEqual(stderr.getvalue(), f"Cannot start: no config at {path}. "
+                                            "Run python3 main.py --setup to create it.\n")
 
 
 
