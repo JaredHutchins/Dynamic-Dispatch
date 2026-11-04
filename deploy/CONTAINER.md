@@ -34,8 +34,8 @@ or Docker socket mount is needed.
   install-link helper can run in the container shell opened in step 5.
 - For each agent you include, a way for it to log in:
   - **Claude Code:** a Claude subscription that includes Claude Code, to
-    create a long-lived login token with `claude setup-token` on another
-    computer, or an Anthropic API key.
+    create a long-lived login token with `claude setup-token` inside the
+    container, or an Anthropic API key.
   - **Codex:** a ChatGPT plan that includes Codex, to sign in from a browser
     on another device, or an OpenAI API key.
   - **Gemini:** a Google Cloud project with billing and the Vertex AI API
@@ -297,29 +297,27 @@ Anthropic's commercial terms, under which its inputs and outputs aren't used
 for training by default. Check the provider's current settings and terms
 before the first run.
 
-Claude Code reads its login from `/etc/dynamic-dispatch/claude.env`. On
-another computer with Claude Code, run `claude setup-token` to create a
-long-lived subscription token. Then write the env file; the prompt doesn't
-echo what you paste:
+Create a subscription token inside the container as Claude's account; Claude
+Code does not need to be installed on your computer:
 
 ```sh
-dc run --rm --user root --entrypoint /bin/bash dd -c \
-  'read -rsp "Claude token: " token; echo; umask 027;
-   printf "CLAUDE_CODE_OAUTH_TOKEN=%s\n" "$token" > /etc/dynamic-dispatch/claude.env;
-   chown root:dd-agent /etc/dynamic-dispatch/claude.env; chmod 640 /etc/dynamic-dispatch/claude.env'
+dc run --rm -it --user dd-agent --workdir /tmp --entrypoint claude dd setup-token
+dc run --rm -it --user root --entrypoint python3 dd deploy/dd-claude-login --config /home/dd/config/config.json
 ```
 
-With an API key instead, replace `CLAUDE_CODE_OAUTH_TOKEN` with
-`ANTHROPIC_API_KEY`. Keep only one of the two lines in the file. Setup already
-points the `claude-code` agent at this file. Smoke test:
+Paste the whole token at the hidden prompt, including any second line, then
+press Return on an empty line. The helper removes whitespace, checks the
+prefix and warns if a subscription token looks cut short. It also accepts an
+Anthropic API key and chooses the right login variable automatically.
+It replaces the configured env file with one login line, owned by root and
+Claude's group with mode 640. Without config or a Claude agent it announces
+the defaults: `/etc/dynamic-dispatch/claude.env` and group `dd-agent`.
 
-```sh
-dc run --rm --user dd-agent --workdir /tmp --entrypoint /bin/bash dd -c \
-  'set -a; . /etc/dynamic-dispatch/claude.env; printf "Reply with OK\n" | claude -p --output-format json'
-```
-
-A working login prints JSON with `"result"`. The subscription token expires
-after about a year; write the file again with a new one.
+The helper asks: "Test the login now with one tiny request to Claude (60-second limit)? [y/N]"
+Accept to check the login as Claude's account. It prints `Claude replied OK`
+or an error type, never raw JSON or the token. If Claude rejects the login,
+it tells you to make a new token with `claude setup-token` and run the helper
+again.
 
 ### Codex
 

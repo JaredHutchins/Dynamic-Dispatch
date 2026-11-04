@@ -31,6 +31,7 @@ The categories:
 | `deploy/dynamic-dispatch.service` | installed |
 | `deploy/dynamic-dispatch-rollback.service` | installed |
 | `deploy/dd-install` | checkout |
+| `deploy/dd-claude-login` | checkout |
 | `deploy/Dockerfile` | image |
 | `deploy/compose.yaml` | image |
 | `deploy/dd-container-start` | image |
