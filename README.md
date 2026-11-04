@@ -39,7 +39,7 @@ For Docker or Colima, follow [Run DD in a container](deploy/CONTAINER.md).
   See [Set up Plane Cloud](deploy/PLANE_CLOUD.md).
 - **A GitHub repository,** a GitHub App for DD (it opens pull requests and
   sets the status light), and a Git login on the machine that can push to the
-  repository.
+  repository, saved and checked with `python3 main.py --save-push-login`.
 - **At least one agent:** Claude Code, Codex or Gemini CLI, installed and
   logged in. Gemini CLI has so far been tested with its recorded output, not
   a live account.

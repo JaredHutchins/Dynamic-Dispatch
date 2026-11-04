@@ -106,7 +106,7 @@ class Doctor(unittest.TestCase):
             self.assertEqual(command[5:], ['/usr/local/bin/dd-agent-run'])
             return proc.Result(self.sudo.get(command[4], 1), '', 'fake-private-sudo', False, False)
 
-        self.origin = self.enterContext(mock.patch.object(gitops, 'check_origin'))
+        self.push = self.enterContext(mock.patch.object(gitops, 'check_push', return_value=gitops.PUSH_OK))
         self.which = self.enterContext(mock.patch.object(shutil, 'which', return_value='/usr/bin/fake'))
         self.account = self.enterContext(mock.patch.object(pwd, 'getpwnam', return_value=mock.Mock()))
         self.group = self.enterContext(mock.patch.object(doctor.config, 'agent_group', return_value=1234))
@@ -372,14 +372,26 @@ class Doctor(unittest.TestCase):
 
     def test_git_push_login(self):
         code, output = self.run_doctor()
-        self.origin.assert_called_once_with('/fake-private-repo')
-        self.assertIn('OK Git push login 1:', output)
-        self.assertIn("WARN Git push login 1 write access: write access can't be confirmed without pushing", output)
-        self.origin.side_effect = gitops.GitError('fake-private-git-error')
+        self.push.assert_called_once_with('/fake-private-repo')
+        self.assertIn('OK Git push login 1: The saved Git login can push; a push dry run was accepted', output)
+        expected = [(gitops.PUSH_INVALID, 1, 'FAIL Git push login 1: rejected: the token is invalid or expired; '
+                     'renew it with python3 main.py --save-push-login.'),
+                    (gitops.PUSH_NO_WRITE, 1, 'FAIL Git push login 1: rejected: the token has no write access '
+                     'to this repository;'),
+                    (gitops.PUSH_UNREACHABLE, 0, "WARN Git push login 1: couldn't reach GitHub (not a token problem);"),
+                    (gitops.PUSH_NOT_DOWNLOADED, 0, 'WARN Git push login 1: not downloaded yet, checked after the first start.'),
+                    (gitops.PUSH_FAILED, 1, "FAIL Git push login 1: couldn't check: Git failed for another reason")]
+        for result, status, line in expected:
+            with self.subTest(result):
+                self.push.return_value = result
+                code, output = self.run_doctor()
+                self.assertEqual(code, status)
+                self.assertIn(line, output)
+                self.assertNotIn('fake-private', output)
+        self.push.side_effect = OSError('fake-private-git-missing')
         code, output = self.run_doctor()
         self.assertEqual(code, 1)
-        self.assertIn('FAIL Git push login 1:', output)
-        self.assertIn('SKIP Git push login 1 write access: skipped: the Git push login 1 check failed', output)
+        self.assertIn("FAIL Git push login 1: couldn't check", output)
         self.assertNotIn('fake-private', output)
 
     def test_agent_checks(self):

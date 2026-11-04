@@ -212,25 +212,18 @@ dc run --rm -T --user dd --entrypoint /bin/sh dd -c \
   'umask 077; cat > /home/dd/config/github-app.pem' < /absolute/path/to/github-app.pem
 ```
 
-Back in the container shell, save a Git push login without putting the token
-in shell history. This helper prompts privately and stores it on DD's home
-volume. Use a token with repository Contents: read and write permission:
+Back in the container shell, save the Git push login. Use a fine-grained
+token with repository Contents: read and write permission on each project.
+The command asks for your GitHub username and then the token, which is hidden
+as you paste it and never printed. It saves the login in Git's credential
+store on DD's home volume (`/home/dd/.git-credentials`, mode 600), offers to
+remove any other saved GitHub login so Git uses the new one, and checks each
+project with a push dry run. Before setup there are no projects yet, so it
+says the check runs once a project is added; `--doctor` makes the same check
+later.
 
 ```sh
-python3 - <<'PY'
-import getpass
-import os
-from pathlib import Path
-import subprocess
-os.umask(0o077)
-username = input('GitHub username: ').strip()
-token = getpass.getpass('GitHub Git push token: ')
-subprocess.run(['git', 'config', '--global', 'credential.helper', 'store'], check=True)
-subprocess.run(['git', 'credential', 'approve'], input=
-               f'protocol=https\nhost=github.com\nusername={username}\npassword={token}\n\n',
-               text=True, check=True)
-Path.home().joinpath('.git-credentials').chmod(0o600)
-PY
+python3 main.py --save-push-login --config /home/dd/config/config.json
 python3 main.py --setup --config /home/dd/config/config.json
 ```
 
@@ -498,6 +491,23 @@ The `version` is the running commit SHA. A stale heartbeat means DD is not
 currently polling. `git rev-parse HEAD` alone would show the checkout, which
 may have changed since the process started.
 
+### Renew the push token
+
+Regenerate the token on GitHub (Settings, Developer settings, Personal access
+tokens), with the same repository Contents: read and write permission. Then,
+from the host, run the command as DD's account and paste the new token:
+
+```sh
+dc exec --user dd dd python3 main.py --save-push-login --config /home/dd/config/config.json
+```
+
+It replaces the saved login for the same username and prints one line per
+project: `OK`, a rejection (the token is invalid or expired, or has no write
+access to that repository), `couldn't reach GitHub (not a token problem)`, or
+`not downloaded yet` for a project DD hasn't cloned yet. If `github.token` in
+config holds the same token, update it there too. No restart is needed: Git
+reads the saved login on each push.
+
 ## 9. Keep a Mac awake
 
 The Mac, its container runtime and network must stay running. Keep it plugged
@@ -543,7 +553,7 @@ rm "$HOME/Library/LaunchAgents/local.dd.awake.plist"
 | Clone/build fails | Check host and container DNS, HTTPS access to GitHub and package registries, and available disk space. The checkout volume must be empty or a valid Git checkout. |
 | Missing config or permission failure | Use `/home/dd/config/config.json` with every setup/doctor command, owned by `dd`, mode 600. Run setup as `dd`, never root. |
 | Plane rejects login | Cloud uses `https://app.plane.so` for web links and `https://api.plane.so` for API calls. Check workspace slug, app installation, permissions and distinct identities in [Plane Cloud setup](PLANE_CLOUD.md). |
-| GitHub API works but cloning/pushing fails | The App and Git push login are separate. Check the saved Git login as `dd`, repository access and Contents write permission. `--add-project` requires an App; read access alone does not prove push access. |
+| GitHub API works but cloning/pushing fails | The App and Git push login are separate. Run `--save-push-login` as `dd` (see "Renew the push token"): its push dry run says whether the token is invalid or expired, lacks write access to a repository, or GitHub couldn't be reached. `--add-project` requires an App. |
 | Build stops at `DD_AGENTS` | Use only `claude`, `codex` and `gemini`, separated by spaces, on the override's `DD_AGENTS` line. |
 | Claude Code 401 or "invalid API key" | Check `claude.env` has one line, `CLAUDE_CODE_OAUTH_TOKEN=` or `ANTHROPIC_API_KEY=` followed by the value with no quotes, and that the token hasn't expired. Do not print the file to debug it. |
 | Codex says it isn't logged in | Run the `codex login status` command from step 6 as `dd-codex`, and sign in again if needed. With an API key, check `codex.env` and the agent's `env_file` in config. |

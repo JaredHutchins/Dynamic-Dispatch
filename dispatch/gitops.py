@@ -17,12 +17,14 @@ When DD runs Git inside a worktree it therefore:
 import errno
 import os
 import re
+import secrets
 import shutil
 import stat
 import tempfile
 import threading
 from functools import wraps
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 from . import logins, proc
 from .redact import scrub
@@ -58,13 +60,15 @@ def _serialized(function):
     return locked
 
 
-def _git(args, cwd, check=True, git_dir=None, work_tree=None, extra_config=()):
+def _git(args, cwd, check=True, git_dir=None, work_tree=None, extra_config=(), env=None,
+         timeout=GIT_TIMEOUT, input_text=None):
     command = ["git"]
     if git_dir:
         command += [f"--git-dir={git_dir}", f"--work-tree={work_tree}"]
     command += SAFE_CONFIG + list(extra_config) + list(args)
-    env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
-    result = proc.run_capped(command, cwd=cwd, timeout=GIT_TIMEOUT, limit=GIT_OUTPUT_LIMIT, env=env)
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0", **(env or {}))
+    result = proc.run_capped(command, cwd=cwd, timeout=timeout, limit=GIT_OUTPUT_LIMIT, env=env,
+                             input_text=input_text)
     if check and (result.timed_out or result.returncode != 0):
         detail = (result.stderr or result.stdout).strip()
         raise GitError(scrub(f"git {' '.join(args)} failed: {detail}"))
@@ -416,6 +420,11 @@ def commit_all(repo, worktree, message, author):
     _in_worktree(repo, worktree, ["commit", "--no-verify", "-m", message], extra_config=identity)
 
 
+AUTH_FAILURE = re.compile(r"authentication failed|authentication failure|could not read (?:username|password)|"
+                          r"permission denied.*publickey|invalid username or (?:password|token)|"
+                          r"invalid credentials|http basic: access denied", re.I)
+
+
 @_serialized
 def push(repo, worktree, branch):
     """Push using the host's credential store; no token ever appears in a command."""
@@ -424,9 +433,7 @@ def push(repo, worktree, branch):
     try:
         _in_worktree(repo, worktree, ["push", "--no-verify", "--set-upstream", "origin", branch])
     except GitError as e:
-        if re.search(r"authentication failed|authentication failure|could not read (?:username|password)|"
-                     r"permission denied.*publickey|invalid username or (?:password|token)|"
-                     r"invalid credentials|http basic: access denied", str(e), re.I):
+        if AUTH_FAILURE.search(str(e)):
             logins.login(key, 'Git push login', 'git push to origin', True)
         raise
     else:
@@ -441,6 +448,119 @@ def check_origin(repo):
     can see the repository, not that it may write to it.
     """
     _git(["ls-remote", "origin", "HEAD"], repo)
+
+
+# What a push check found, as check_push returns it.
+PUSH_OK = "ok"
+PUSH_INVALID = "invalid"
+PUSH_NO_WRITE = "no write"
+PUSH_UNREACHABLE = "unreachable"
+PUSH_NOT_DOWNLOADED = "not downloaded"
+PUSH_FAILED = "failed"
+PUSH_CHECK_TIMEOUT = 60
+# GitHub refuses a login without write access with 403, or hides a private repository it can't see.
+NO_WRITE = re.compile(r"permission to \S+ denied|write access to repository not granted|"
+                      r"returned error: 403|repository not found|repository '[^']*' not found", re.I)
+UNREACHABLE = re.compile(r"could not resolve|couldn't resolve|failed to connect|couldn't connect|"
+                         r"connection (?:timed out|refused|reset)|operation timed out|network is unreachable|"
+                         r"no route to host|\bssl|gnutls|handshake|empty reply|returned error: 5\d\d|rpc failed|"
+                         r"remote end hung up|early eof", re.I)
+# Nothing may ask for a password: no askpass program, no credential manager window, no SSH prompt.
+NO_PROMPT = {"GIT_ASKPASS": "", "SSH_ASKPASS": "", "SSH_ASKPASS_REQUIRE": "never", "GCM_INTERACTIVE": "never",
+             "GIT_SSH_COMMAND": "ssh -o BatchMode=yes"}
+GITHUB_HOST = "github.com"
+
+
+def check_push(repo):
+    """Whether the clone's origin would accept a push, by the login Git itself would push with.
+
+    A dry run to a throwaway branch name: Git signs in as for a real push, but
+    sends nothing, so no branch is created, and hooks are off. Returns a PUSH_ value.
+    """
+    if not Path(repo).exists():
+        return PUSH_NOT_DOWNLOADED
+    # Anything else there isn't a clone, and Git would look for one in the folders above it.
+    if not (Path(repo) / ".git").is_dir():
+        return PUSH_FAILED
+    return _dry_run_push(repo)
+
+
+@_serialized
+def _dry_run_push(repo):
+    branch = "dd-push-check-" + secrets.token_hex(8)
+    result = _git(["push", "--dry-run", "--no-verify", "origin", f"HEAD:refs/heads/{branch}"], repo,
+                  check=False, env=NO_PROMPT, timeout=PUSH_CHECK_TIMEOUT)
+    output = result.stderr + result.stdout
+    if result.timed_out:
+        return PUSH_UNREACHABLE
+    if result.returncode == 0:
+        return PUSH_OK
+    if AUTH_FAILURE.search(output):
+        return PUSH_INVALID
+    if NO_WRITE.search(output):
+        return PUSH_NO_WRITE
+    if UNREACHABLE.search(output):
+        return PUSH_UNREACHABLE
+    return PUSH_FAILED
+
+
+def push_credentials_path():
+    """The file Git's credential store keeps the push login in."""
+    return Path.home() / ".git-credentials"
+
+
+def _credential(action, username, token=None):
+    fields = {"protocol": "https", "host": GITHUB_HOST, "username": username}
+    if token is not None:
+        fields["password"] = token
+    # The token goes to Git on its input, never in a command line.
+    _git(["credential", action], None, env=NO_PROMPT, timeout=PUSH_CHECK_TIMEOUT,
+         input_text="".join(f"{key}={value}\n" for key, value in fields.items()) + "\n")
+
+
+def save_push_login(username, token):
+    """Save a GitHub login in Git's credential store, readable by this account alone.
+
+    Replaces any saved login with the same username.
+    """
+    if not username or not token or re.search(r"[\s\0]", username + token):
+        raise ValueError("A username and token can't be empty or contain spaces or line breaks")
+    helpers = _git(["config", "--global", "--get-all", "credential.helper"], None, check=False).stdout
+    if "store" not in (line.strip() for line in helpers.splitlines()):
+        _git(["config", "--global", "--add", "credential.helper", "store"], None)
+    path = push_credentials_path()
+    # Created first, so the store writes this file and not another of the ones it reads.
+    os.close(os.open(path, os.O_WRONLY | os.O_CREAT, 0o600))
+    os.chmod(path, 0o600)
+    previous = os.umask(0o077)
+    try:
+        _credential("approve", username, token)
+    finally:
+        os.umask(previous)
+    os.chmod(path, 0o600)
+
+
+def saved_push_logins():
+    """The usernames of every GitHub login Git's credential store has, in the order Git tries them."""
+    config_home = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    usernames = []
+    for path in (push_credentials_path(), config_home / "git" / "credentials"):
+        try:
+            lines = path.read_text().splitlines()
+        except FileNotFoundError:
+            continue
+        for line in lines:
+            url = urlsplit(line.strip())
+            if url.scheme == "https" and url.hostname == GITHUB_HOST and url.username:
+                username = unquote(url.username)
+                if username not in usernames:
+                    usernames.append(username)
+    return usernames
+
+
+def remove_push_login(username):
+    """Remove a saved GitHub login from Git's credential store."""
+    _credential("reject", username)
 
 
 @_serialized
