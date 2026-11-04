@@ -106,8 +106,8 @@ def _project(client, name):
     if found:
         if input('A Plane project with this name exists. Use it? [y/N]: ').strip().lower() not in ('y', 'yes'):
             raise SetupError('Existing project left unchanged.')
-        return found[0]
-    return client.post('/projects/', {'name': name, 'identifier': _identifier(name, projects)})
+        return found[0], False
+    return client.post('/projects/', {'name': name, 'identifier': _identifier(name, projects)}), True
 
 
 def _identifier(name, projects):
@@ -120,8 +120,54 @@ def _identifier(name, projects):
     raise SetupError('Every generated Plane identifier is in use; create the Plane project by hand, then run setup again.')
 
 
-def _board(client, project_id):
+def _starting_states(client, project_id, states, created):
+    pairs = [('Backlog', 'Product Backlog', 'backlog'), ('Todo', 'Sprint Backlog', 'unstarted')]
+    renames = []
+    unused = []
+    conflict = False
+    for old, new, group in pairs:
+        sources = [s for s in states if s['name'].casefold() == old.casefold()]
+        targets = [s for s in states if s['name'].casefold() == new.casefold()]
+        unused.extend(s['name'] for s in sources)
+        if sources and targets:
+            conflict = True
+        if sources and not targets:
+            if len(sources) != 1 or sources[0].get('group') != group:
+                raise SetupError('A Plane starting column is ambiguous or in the wrong state group; check it in Plane.')
+            renames.append((sources[0], new))
+    if not unused:
+        return created
+    approved = created
+    if renames and not conflict and not created:
+        answer = input("This project has Plane's Backlog and Todo states. Rename them to Product Backlog "
+                       "and Sprint Backlog, and make Product Backlog the default? [Y/n]").strip().lower()
+        if answer not in ('', 'y', 'yes', 'n', 'no'):
+            raise SetupError('Answer yes or no for renaming Plane states.')
+        approved = answer in ('', 'y', 'yes')
+    if conflict or not approved:
+        for name in unused:
+            print(redact.scrub(f'DD will not use {name}. To remove it in Plane, make another state the default '
+                               'first, move any work items out, then delete it.'))
+        return
+    for state, name in renames:
+        client.patch(f"/projects/{project_id}/states/{state['id']}/", {'name': name})
+        state['name'] = name
+    return True
+
+
+def _default_state(client, project_id, state_id):
+    try:
+        client.patch(f"/projects/{project_id}/states/{state_id}/", {'default': True})
+        if any(s['id'] == state_id and s.get('default') for s in client.states(project_id)):
+            return
+    except plane.PlaneError:
+        pass
+    print('Set Product Backlog as the default by hand in Plane: open the state\'s menu, then "Mark as default".')
+
+
+def _board(client, project_id, created=False):
     states = client.states(project_id)
+    set_default = _starting_states(client, project_id, states, created)
     labels = client.labels(project_id)
     result, label_ids = {}, {}
     for key, name, group in STATES:
@@ -132,6 +178,8 @@ def _board(client, project_id):
             'name': name, 'group': group, 'color': '#60646C', 'sequence': len(result) * 1000,
         })
         result[key] = state['id']
+    if set_default:
+        _default_state(client, project_id, result['product_backlog'])
     for name in LABELS:
         matches = [label for label in labels if label['name'].casefold() == name.casefold()]
         if len(matches) > 1:
@@ -202,11 +250,11 @@ def run(path=None):
         stage = 'setting up Plane; check account access and project administration permissions'
         client = plane.orchestrator_login(cfg)
         using[0] = client.name
-        project = _project(client, name)
+        project, created = _project(client, name)
         old = cfg['projects'].get(name)
         if old and old['plane_project_id'] != project['id']:
             raise SetupError('That configured name refers to a different Plane project; nothing was replaced.')
-        states, labels = _board(client, project['id'])
+        states, labels = _board(client, project['id'], created)
         _members(cfg, client, project['id'], enabled, using)
         saved = json.loads(original)['projects'].get(name, {})
         settings = _settings(cfg, saved, repo, command, enabled, docs, project, states, labels, branch)
