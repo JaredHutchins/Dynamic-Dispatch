@@ -143,6 +143,18 @@ class Doctor(unittest.TestCase):
         self.assertIn("write permissions can't be checked for a personal token", output)
         self.assertIn('push permission is allowed', output)
 
+    def test_unfinished_setup_is_warned_about(self):
+        _, output = self.run_doctor()
+        self.assertNotIn('WARN Setup', output)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'config.json'
+            (Path(directory) / 'config.json.setup-progress').write_text('{}')
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = doctor.run(path)
+        self.assertEqual(code, 0)
+        self.assertIn("WARN Setup: Guided setup didn't finish; run --setup again to continue.", out.getvalue())
+
     def test_failures(self):
         cases = [(0, 'Config'), (2, 'Store'), (3, 'Plane Orchestrator'), (4, 'GitHub repository 1')]
         for index, label in cases:

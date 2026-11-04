@@ -1,7 +1,10 @@
 """Guided setup that writes config.json. Entered values and service errors never reach output.
 
-Secrets are typed hidden and kept only in config.json and its private backups,
-which config.save writes the same way project onboarding does.
+Secrets are typed hidden and kept only in config.json, its private backups and,
+until setup finishes, its private progress file. config.json is written once, at
+the end, by config.save as project onboarding does, so nothing ever reads a
+half-answered one; each section's answers are kept in the progress file as it
+passes, so a later stop doesn't lose them.
 """
 
 import copy
@@ -50,10 +53,16 @@ Before you start, have ready:
   and its private key saved on this machine with chmod 600.
   Or a fine-grained token (https://github.com/settings/personal-access-tokens).
 Secrets are typed hidden. Press Enter to keep a current value."""
+STOPPED = ("Setup stopped. Your answers so far are saved; run --setup again and "
+           "they'll be offered as the current values.")
 
 
 class Invalid(Exception):
     """An answer failed its check; the message is safe to print."""
+
+
+class UnusableProgress(Invalid):
+    """The progress file can't be offered, so rerunning alone won't help."""
 
 
 def _ask(label, current=None, *, secret=False, check=None, optional=False):
@@ -247,11 +256,16 @@ def _keep(current, value, answer=None):
     return current if current is not None and _text(current) in (value, answer) else value
 
 
-def _choose_agents(agents):
-    """Add the installer's agents the user names; agents already configured stay."""
-    configured = {short for short, (name, _) in AGENTS.items() if name in agents}
-    installed = {short for short, (_, template) in AGENTS.items() if _account_exists(template['run_as'])}
-    current = ' '.join(short for short in AGENTS if short in configured | installed) or 'claude codex'
+def _choose_agents(agents, kept, resumed):
+    """Add the installer's agents the user names; agents already in config.json (kept) stay."""
+    configured = {short for short, (name, _) in AGENTS.items() if name in kept}
+    if resumed:
+        # The saved answer is the earlier run's choice, so Enter keeps it rather than redetecting.
+        offered = {short for short, (name, _) in AGENTS.items() if name in agents}
+    else:
+        offered = configured | {short for short, (_, template) in AGENTS.items()
+                                if _account_exists(template['run_as'])}
+    current = ' '.join(short for short in AGENTS if short in offered) or 'claude codex'
 
     def check(value):
         names = value.split()
@@ -259,7 +273,12 @@ def _choose_agents(agents):
             raise Invalid('Use the installer\'s names: ' + ' '.join(AGENTS) + '.')
         if not configured <= set(names):
             raise Invalid('Configured agents stay; remove one by editing config.json.')
-    for short in _ask('Agents chosen in the installer (' + ' '.join(AGENTS) + ')', current, check=check).split():
+    chosen = _ask('Agents chosen in the installer (' + ' '.join(AGENTS) + ')', current, check=check).split()
+    # An agent only saved in the progress file can still be left out.
+    for short, (name, _) in AGENTS.items():
+        if short not in chosen and name not in kept:
+            agents.pop(name, None)
+    for short in chosen:
         name, template = AGENTS[short]
         agents.setdefault(name, copy.deepcopy(template))
 
@@ -272,9 +291,10 @@ def _account_exists(name):
         return False
 
 
-def _agents(cfg, orchestrator):
+def _agents(cfg, orchestrator, kept, resumed, passed):
+    """Ask for each agent's login and commit details, calling passed as each one's checks succeed."""
     agents = cfg.setdefault('agents', {})
-    _choose_agents(agents)
+    _choose_agents(agents, kept, resumed)
     users = {orchestrator}
     for name, agent in agents.items():
         who = agent.get('display_name') or name
@@ -295,6 +315,7 @@ def _agents(cfg, orchestrator):
                               check=_matches(r'[^\n<>]+', 'Enter a name without < or >.'))
         author['email'] = _ask(f"{who}'s commit email", author.get('email'),
                                check=_matches(EMAIL, 'Enter an email address, such as a GitHub noreply address.'))
+        passed()
 
 
 def _alerts(cfg):
@@ -358,34 +379,74 @@ def _finish(path, cfg):
     return result
 
 
+def _sections(path, original, cfg):
+    """Ask every section in order, keeping the answers in the progress file as each one passes."""
+    kept = set(cfg.get('agents', {}))
+    try:
+        saved = config.read_progress(path, original)
+    except config.ConfigError as error:
+        raise UnusableProgress(redact.scrub(str(error))) from None
+    if saved is not None:
+        cfg = saved
+        print('Answers saved by an earlier run are offered as the current values.')
+
+    def passed():
+        config.save_progress(path, cfg, original)
+    orchestrator = _plane(cfg)
+    passed()
+    _github(cfg)
+    passed()
+    _agents(cfg, orchestrator, kept, saved is not None and 'agents' in saved, passed)
+    _alerts(cfg)
+    passed()
+    cfg.setdefault('projects', {})
+    return cfg
+
+
+def _save(path, cfg, original):
+    """Write config.json once, then drop the progress file it supersedes."""
+    try:
+        config.save(path, cfg, original)
+    except config.ConfigChanged:
+        raise Invalid(f'{path} changed on disk while setup ran, so setup left it as it is.') from None
+    config.clear_progress(path)
+    if original is not None and path.read_bytes() == original:
+        print('Nothing changed; config.json was left as it was.')
+    else:
+        print(f'Saved {path}.' + ('' if original is None else
+                                  ' The previous version is kept beside it as a private backup.'))
+
+
 def run(path=None):
     path = Path(path or config.DEFAULT_CONFIG_PATH)
     print(INTRO)
+    saved = False
     try:
         original, cfg = _existing(path)
-        orchestrator = _plane(cfg)
-        _github(cfg)
-        _agents(cfg, orchestrator)
-        _alerts(cfg)
-        cfg.setdefault('projects', {})
-        config.save(path, cfg, original)
-        if original is not None and path.read_bytes() == original:
-            print('Nothing changed; config.json was left as it was.')
-        else:
-            print(f'Saved {path}.' + ('' if original is None else
-                                      ' The previous version is kept beside it as a private backup.'))
+        cfg = _sections(path, original, cfg)
+        _save(path, cfg, original)
+        saved = True
         # DD makes this folder when it starts; making it now lets doctor's Store check pass first.
         Path(cfg['db_path']).parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         return _finish(path, cfg)
-    except Invalid as error:
+    except UnusableProgress as error:
         print('Setup stopped: ' + str(error))
+        return 1
+    except Invalid as error:
+        print(error)
     except getpass.GetPassWarning:
-        print('Setup stopped: secrets can only be typed hidden, so run it in a terminal.')
+        print('Secrets can only be typed hidden, so run it in a terminal.')
     except (EOFError, KeyboardInterrupt):
-        print('\nSetup cancelled. Run --setup again; anything already saved is offered as the current value.')
+        print()
     except config.ConfigError as error:
-        print('Setup stopped: ' + redact.scrub(str(error)))
+        print(redact.scrub(str(error)))
     except Exception:
         # Service errors, API bodies and paths may hold credentials.
-        print('Setup stopped unexpectedly. Check config.json permissions and the network, then run --setup again.')
+        print('Something unexpected went wrong. Check config.json permissions and the network.')
+    if saved:
+        print('Setup stopped after saving config.json; run --setup again to finish.')
+    elif config.progress_path(path).exists():
+        print(STOPPED)
+    else:
+        print('Setup stopped. Nothing was saved; run --setup again.')
     return 1

@@ -139,6 +139,8 @@ def run(path=None, *, project=None):
     else:
         report('FAIL', 'Python', 'DD needs Python %d.%d or newer; this is %d.%d.' % (*MIN_PYTHON, *sys.version_info[:2]))
 
+    if os.path.exists(config.progress_path(path or config.DEFAULT_CONFIG_PATH)):
+        report('WARN', 'Setup', "Guided setup didn't finish; run --setup again to continue.")
     cfg = check('Config', lambda: config.load(path), 'config.json loads.',
                 'Cannot load config.json; check its JSON, required settings and private file permissions.')
     check('Config permissions', lambda: require(stat.S_IMODE(Path(path or config.DEFAULT_CONFIG_PATH).stat().st_mode) == 0o600),
