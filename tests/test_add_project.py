@@ -20,6 +20,21 @@ class FakePlane:
         self.writes = []
         self.fail_label = False
 
+    def starting_states(self):
+        self.columns.extend(dict(id='initial-' + str(i), name=name, group=group, default=i == 0)
+                            for i, (name, group) in enumerate([
+                                ('Backlog', 'backlog'), ('Todo', 'unstarted'), ('In Progress', 'started'),
+                                ('Done', 'completed'), ('Cancelled', 'cancelled')]))
+
+    def patch(self, path, body):
+        self.writes.append((path, body))
+        state = next(s for s in self.columns if s['id'] == path.split('/')[-2])
+        if body.get('default'):
+            for column in self.columns:
+                column['default'] = False
+        state.update(body)
+        return dict(state)
+
     def projects(self):
         return self.project_list
 
@@ -47,6 +62,8 @@ class FakePlane:
         row = dict(body, id=str(len(self.writes)))
         target = self.columns if 'states' in path else self.tags if 'labels' in path else self.project_list
         target.append(row)
+        if path == '/projects/':
+            self.starting_states()
         return row
 
 
@@ -85,11 +102,13 @@ class SetupTests(unittest.TestCase):
         for name, value in patches.items():
             self.mocks[name] = self.enterContext(patch('dispatch.add_project.' + name, value))
 
-    def run_setup(self, reuse=False, cycles=True, docs=('', '', ''), prepare=()):
+    def run_setup(self, reuse=False, cycles=True, docs=('', '', ''), prepare=(), rename=''):
         output = io.StringIO()
         answers = ['Example', 'example/project', 'python3 -m unittest', 'y' if cycles else 'n', *docs]
         if reuse:
             answers.append('y')
+            if any(s['name'] in ('Backlog', 'Todo') for s in self.service.columns):
+                answers.append(rename)
         answers.extend(prepare)
         with patch('builtins.input', side_effect=answers) as ask, contextlib.redirect_stdout(output):
             result = add_project.run(self.path)
@@ -195,6 +214,10 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(self.run_setup()[0], 0)
         saved = config.load(self.path)['projects']['Example']
         self.assertEqual(len(saved['states']), 7)
+        self.assertEqual(len(self.service.columns), 7)
+        self.assertEqual(saved['states']['product_backlog'], 'initial-0')
+        self.assertEqual(saved['states']['sprint_backlog'], 'initial-1')
+        self.assertEqual([s['name'] for s in self.service.columns if s.get('default')], ['Product Backlog'])
         self.assertEqual(saved['base_branch'], 'trunk')
         self.assertEqual(saved['verify_command'], ['python3', '-m', 'unittest'])
         self.assertEqual(saved['cycles']['carried_over_label_id'], saved['carried_over_label_id'])
@@ -212,6 +235,109 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(self.path.read_bytes(), saved_bytes)
         self.assertEqual(len(list(self.path.parent.glob('config.json.backup-*'))), 1)
         self.mocks['doctor.run'].assert_called_with(self.path, project='Example')
+
+    def test_existing_starting_states_yes_and_no(self):
+        for answer in ('yes', 'n'):
+            with self.subTest(answer=answer):
+                self.path.write_text(json.dumps(self.cfg))
+                self.service = FakePlane()
+                self.mocks['plane.Plane'].return_value = self.service
+                self.service.project_list.append({'id': 'existing', 'name': 'Example', 'identifier': 'EX'})
+                self.service.starting_states()
+                self.service.columns[0]['default'] = False
+                self.service.columns[3]['default'] = True
+                self.service.items = [{'state': 'initial-0'}, {'state': 'initial-1'}]
+                original = [dict(s) for s in self.service.columns]
+                result, text = self.run_setup(reuse=True, rename=answer)
+                self.assertEqual(result, 0, text)
+                self.assertIn('make Product Backlog the default? [Y/n] ', self.asked)
+                self.assertEqual(self.service.items, [{'state': 'initial-0'}, {'state': 'initial-1'}])
+                if answer == 'yes':
+                    self.assertEqual(len(self.service.columns), 7)
+                    self.assertEqual(self.service.columns[0]['name'], 'Product Backlog')
+                    self.assertTrue(self.service.columns[0]['default'])
+                    self.assertEqual(self.service.columns[1]['name'], 'Sprint Backlog')
+                else:
+                    self.assertEqual(self.service.columns[:5], original)
+                    self.assertEqual(len(self.service.columns), 9)
+                    self.assertIn('Dynamic Dispatch will not use Backlog', text)
+                    self.assertIn('Dynamic Dispatch will not use Todo', text)
+
+    def test_odd_starting_states_are_unused_and_setup_finishes(self):
+        for odd in ('duplicate', 'wrong_group'):
+            with self.subTest(odd=odd):
+                self.path.write_text(json.dumps(self.cfg))
+                self.service = FakePlane()
+                self.mocks['plane.Plane'].return_value = self.service
+                self.service.project_list.append({'id': 'existing', 'name': 'Example', 'identifier': 'EX'})
+                self.service.starting_states()
+                if odd == 'duplicate':
+                    self.service.columns.append(dict(self.service.columns[1], id='extra-todo'))
+                else:
+                    self.service.columns[1]['group'] = 'started'
+                todos = [dict(s) for s in self.service.columns if s['name'] == 'Todo']
+                result, text = self.run_setup(reuse=True, rename='yes')
+                self.assertEqual(result, 0, text)
+                self.assertEqual([s for s in self.service.columns if s['name'] == 'Todo'], todos)
+                self.assertEqual(self.service.columns[0]['name'], 'Product Backlog')
+                self.assertIn('Dynamic Dispatch will not use Todo', text)
+                self.assertIn('make another state the default first, move any work items out, then delete it', text)
+                self.assertIn('sprint_backlog', config.load(self.path)['projects']['Example']['states'])
+
+    def test_unclear_rename_answer_asks_again(self):
+        self.service.project_list.append({'id': 'existing', 'name': 'Example', 'identifier': 'EX'})
+        self.service.starting_states()
+        result, text = self.run_setup(reuse=True, rename='perhaps', prepare=('yes',))
+        self.assertEqual(result, 0, text)
+        self.assertEqual(self.asked.count('make Product Backlog the default? [Y/n] '), 2)
+        self.assertEqual(self.service.columns[0]['name'], 'Product Backlog')
+        self.assertTrue(self.service.columns[0]['default'])
+        self.assertEqual(self.service.columns[1]['name'], 'Sprint Backlog')
+
+    def test_both_exist_prevents_all_renames_and_default_changes(self):
+        for name, group in [('Product Backlog', 'backlog'), ('Sprint Backlog', 'unstarted')]:
+            with self.subTest(name=name):
+                service = FakePlane()
+                service.starting_states()
+                service.columns.append({'id': 'dd', 'name': name, 'group': group})
+                original = [dict(s) for s in service.columns]
+                with patch('builtins.input') as ask, contextlib.redirect_stdout(io.StringIO()) as output:
+                    add_project._board(service, 'existing')
+                ask.assert_not_called()
+                self.assertEqual(service.columns[:6], original)
+                self.assertIn('make another state the default first, move any work items out, then delete it',
+                              output.getvalue())
+
+    def test_missing_starting_backlog_is_created_before_setting_default(self):
+        service = FakePlane()
+        service.starting_states()
+        service.columns.pop(0)
+        with patch('builtins.input', return_value=''):
+            states, _ = add_project._board(service, 'existing')
+        self.assertEqual(len(service.columns), 7)
+        self.assertEqual([s['id'] for s in service.columns if s.get('default')],
+                         [states['product_backlog']])
+        self.assertEqual(states['sprint_backlog'], 'initial-1')
+
+    def test_refused_or_ignored_default_change_finishes(self):
+        for refused in (True, False):
+            with self.subTest(refused=refused):
+                self.path.write_text(json.dumps(self.cfg))
+                self.service = FakePlane()
+                self.mocks['plane.Plane'].return_value = self.service
+                update = self.service.patch
+                def patch_state(path, body):
+                    if 'default' in body:
+                        self.service.columns[0]['default'] = False
+                        if refused:
+                            raise plane.PlaneError('fake-secret-plane', status=400)
+                        return {}
+                    return update(path, body)
+                self.service.patch = patch_state
+                result, text = self.run_setup()
+                self.assertEqual(result, 0, text)
+                self.assertEqual(len(self.service.columns), 7)
+                self.assertIn('state\'s menu, then "Mark as default"', text)
 
     def test_saves_only_what_the_file_held(self):
         project = {'plane_project_id': 'old', 'plane_identifier': 'EX', 'github_repo': 'example/project',
@@ -393,6 +519,27 @@ class SetupTests(unittest.TestCase):
 
 
 class PlaneSetupTests(unittest.TestCase):
+    def test_board_state_calls_use_workspace_api_on_ce_and_cloud(self):
+        for origin in ('https://plane.example.com', 'https://api.plane.so'):
+            with self.subTest(origin=origin):
+                client = plane.Plane(origin, 'workspace', 'fake-plane-secret')
+                service = FakePlane()
+                service.starting_states()
+                def request(method, path, payload=None):
+                    if method == 'GET':
+                        return service.states('project') if path.split('?')[0].endswith('/states/') else []
+                    if method == 'PATCH':
+                        return service.patch(path, payload)
+                    return service.post(path, payload)
+                with patch.object(client, '_request', side_effect=request) as api:
+                    states, _ = add_project._board(client, 'project', created=True)
+                self.assertEqual(client.base, origin + '/api/v1/workspaces/workspace')
+                self.assertEqual(states['product_backlog'], 'initial-0')
+                self.assertEqual(len(service.columns), 7)
+                api.assert_any_call('PATCH', '/projects/project/states/initial-0/', {'name': 'Product Backlog'})
+                api.assert_any_call('PATCH', '/projects/project/states/initial-1/', {'name': 'Sprint Backlog'})
+                api.assert_any_call('PATCH', '/projects/project/states/initial-0/', {'default': True})
+
     def test_projects_paginate_and_members_use_v1_payload(self):
         client = plane.Plane('https://plane.example.com', 'workspace', 'fake-plane-secret')
         with patch.object(client, 'get', side_effect=[

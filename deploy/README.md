@@ -432,9 +432,27 @@ change a list, `none` to empty the exempt list, or `n` to turn the check off.
 Setup creates the seven DD columns and three labels and adds Orchestrator and
 all configured agents; Cycles also adds the configured approver. It asks before
 using a same-name Plane project. A new project's work item prefix comes from
-the first five letters and digits of its name, numbered if another project has it. Existing columns, labels and members are reused;
-nothing is deleted or renamed, including Plane's default columns. A DD column
-with an incompatible state group stops setup for manual correction.
+the first five letters and digits of its name, numbered if another project has it.
+For a new project, setup renames Plane's Backlog to Product Backlog and Todo to
+Sprint Backlog, keeping their IDs, and makes Product Backlog the default. Only
+missing Dynamic Dispatch columns are created, leaving exactly seven on a new
+board. For an existing project, setup asks before these renames and the
+default change; Enter accepts, and an unclear answer asks again. Work items
+stay in their states. Answering no leaves existing names and the default
+unchanged, creates missing Dynamic Dispatch columns, and lists the unused
+states.
+
+If either starting state and its Dynamic Dispatch counterpart both exist, setup
+changes no names or defaults and lists the unused starting states. A starting
+state that is duplicated or in an unexpected state group is left as it is and
+listed as unused; setup carries on with the rest. To remove an unused state in
+Plane, make another state the default first, move any work items out, then
+delete it. Dynamic Dispatch never deletes states. If the API refuses or
+ignores the default change, setup still finishes: open Product Backlog's state
+menu in Plane and choose **Mark as default**. These rules apply to CE and
+Cloud. Matching columns, labels and members are reused, so rerunning completed
+setup changes nothing. A Dynamic Dispatch column with an incompatible state
+group stops setup for manual correction.
 
 Clones go beside existing configured clones, named `OWNER--REPO`, and use the
 existing worktree root. Optional top-level `projects_root` and `worktree_root`
