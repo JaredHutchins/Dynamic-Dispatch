@@ -180,9 +180,19 @@ class LoginAlerts(unittest.TestCase):
             with mock.patch.object(github, 'token_expiry', side_effect=error):
                 self.health.check_expiry(at + timedelta(days=offset))
                 self.health.check_expiry(at + timedelta(days=offset))
-        self.cfg['github'] = {}
-        self.health.check_expiry(at + timedelta(days=3))
-        self.assertEqual(self.conn.execute("SELECT sum(repeat_count) FROM events WHERE type='warning'").fetchone()[0], 4)
+        self.assertEqual(self.conn.execute("SELECT sum(repeat_count) FROM events WHERE type='warning'").fetchone()[0], 3)
+        self.send.assert_not_called()
+
+    def test_no_expiry_check_with_an_app_or_without_a_token(self):
+        app = {'app_id': 1, 'installation_id': 2, 'private_key_path': '/fake/key.pem'}
+        for github_cfg in ({}, {'token': ''}, app, dict(app, token='fake-test-token')):
+            self.cfg['github'] = github_cfg
+            with self.subTest(github=github_cfg), mock.patch.object(github, 'token_expiry') as request, \
+                    mock.patch.object(alerts, 'warn') as warn:
+                self.health.check_expiry(datetime(2030, 1, 1, tzinfo=timezone.utc))
+                request.assert_not_called()
+                warn.assert_not_called()
+        self.assertIsNone(self.conn.execute("SELECT type FROM events").fetchone())
         self.send.assert_not_called()
 
     def test_rejection_survives_restart_and_other_login_success(self):
