@@ -520,7 +520,10 @@ Bark the work item is the only warning. After you renew, the next daily check
 comments on the item and moves it to Done if `states.done` is set. `--doctor`
 shows each push token's expiry, and fails for a project missing
 `states.product_backlog` or `human_only_label_id`: run `--add-project` for it
-again to fix that.
+again to fix that. Failed or interrupted checks retry on the next hourly
+monitor pass, including on the same day, without repeating recorded items or
+Bark alerts. Replacing the token resolves its previous warning even when the
+replacement expires soon or is refused; the replacement gets its own warning.
 
 ## 9. Keep a Mac awake
 

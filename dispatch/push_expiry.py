@@ -74,9 +74,10 @@ def _warning(conn, project, detail):
 def check(cfg, conn, alert, at=None):
     """The day's check, once per local day; alert(message) sends a Bark alert when Bark is set up."""
     at = at or datetime.now(timezone.utc)
-    if not runs.claim_push_token_notice(conn, "check:" + at.astimezone().date().isoformat()):
+    key = "check:" + at.astimezone().date().isoformat()
+    if runs.push_token_notice_recorded(conn, key):
         return
-    found, results = _ask_github(conn, cfg["projects"])
+    found, results, complete = _ask_github(conn, cfg["projects"])
     for fingerprint, result in results.items():
         _alert(conn, fingerprint, result, at, alert)
     for name, fingerprint in found.items():
@@ -84,16 +85,22 @@ def check(cfg, conn, alert, at=None):
             try:
                 _project(cfg, conn, name, fingerprint, results[fingerprint], at, alert)
             except Exception as e:
-                _warning(conn, name, f"Could not update the push token work item; will retry tomorrow: {e}")
+                complete = False
+                _warning(conn, name, f"Could not update the push token work item; will retry: {e}")
+    # Only completed checks suppress another attempt; item and alert state survives retries.
+    if complete:
+        runs.claim_push_token_notice(conn, key)
 
 
 def _ask_github(conn, projects):
     """{project: token fingerprint} and {fingerprint: expiry, None or REFUSED}, asking once per token."""
     found, tokens = {}, {}
+    complete = True
     for name, project in projects.items():
         try:
             token = gitops.push_login(project["repo_path"])
         except Exception:
+            complete = False
             _warning(conn, name, "Could not read the Git push login for this project; carrying on.")
             continue
         if token:
@@ -104,8 +111,9 @@ def _ask_github(conn, projects):
         try:
             results[fingerprint] = expiry(token)
         except Exception:
-            _warning(conn, None, "Could not ask GitHub when the Git push token expires; will retry tomorrow.")
-    return found, results
+            complete = False
+            _warning(conn, None, "Could not ask GitHub when the Git push token expires; will retry.")
+    return found, results, complete
 
 
 def _alert(conn, fingerprint, found, at, alert):
@@ -128,8 +136,10 @@ def _alert(conn, fingerprint, found, at, alert):
 
 def _project(cfg, conn, name, fingerprint, found, at, alert):
     if found == REFUSED:
+        _close_items(cfg, conn, name, found, except_token=fingerprint)
         _add_item(cfg, conn, name, fingerprint, found, alert)
     elif found is not None and remaining_days(found, at) <= WINDOW_DAYS:
+        _close_items(cfg, conn, name, found, except_token=fingerprint)
         _add_item(cfg, conn, name, fingerprint, found, alert)
     else:
         _close_items(cfg, conn, name, found)
@@ -168,14 +178,17 @@ def _add_item(cfg, conn, name, fingerprint, found, alert):
                       project=name, issue_id=issue["id"])
 
 
-def _close_items(cfg, conn, name, found):
+def _close_items(cfg, conn, name, found, except_token=None):
     """Comment on each open item that the token was renewed, and move it to Done if that state is set."""
-    items = runs.open_push_token_items(conn, name)
+    items = [item for item in runs.open_push_token_items(conn, name) if item["token"] != except_token]
     if not items:
         return
     project = cfg["projects"][name]
     orch, pid, done = plane.orchestrator(cfg), project["plane_project_id"], project["states"].get("done")
-    text = "The push token was renewed; " + (f"it now expires {day(found)}" if found else "it no longer expires")
+    if found == REFUSED:
+        text = "The push token was replaced, but GitHub refuses the replacement; see its new warning item."
+    else:
+        text = "The push token was renewed; " + (f"it now expires {day(found)}" if found else "it no longer expires")
     for item in items:
         marker = _marker(name, item["token"], item["expiry"]) + "-renewed"
         try:

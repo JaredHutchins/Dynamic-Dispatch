@@ -103,7 +103,7 @@ class PushTokenWarning(unittest.TestCase):
         self.orch.create_issue.side_effect = None
         made = self.orch.create_issue.call_args.args[2]
         self.orch.issues.return_value = [{'id': 'item-9', 'description_html': f'<pre>{made}</pre>'}]
-        self.check(self.days_before(EXPIRY, 13))
+        self.check(self.days_before(EXPIRY, 14))
         self.assertEqual(self.orch.create_issue.call_count, 1)
         self.assertEqual(runs.open_push_token_items(self.conn, 'dd')[0]['issue_id'], 'item-9')
 
@@ -142,10 +142,72 @@ class PushTokenWarning(unittest.TestCase):
         self.orch.comment.assert_called_once()
         self.orch.set_state.assert_not_called()
 
-    def test_a_new_token_still_close_to_expiry_gets_its_own_item(self):
-        self.renew(EXPIRY + timedelta(days=3))
-        self.orch.comment.assert_not_called()
+    def test_replacement_needing_a_warning_closes_only_the_old_item(self):
+        for replacement in (EXPIRY + timedelta(days=3), push_expiry.REFUSED):
+            with self.subTest(replacement=replacement):
+                self.conn.execute('DELETE FROM push_token_items')
+                self.conn.execute('DELETE FROM push_token_notices')
+                self.conn.commit()
+                self.logins['/fake/dd'] = TOKEN
+                self.orch.reset_mock()
+                self.orch.create_issue.side_effect = [{'id': 'old'}, {'id': 'new'}]
+                self.renew(replacement)
+                self.orch.comment.assert_called_once()
+                text = self.orch.comment.call_args.args[2]
+                self.assertIn('refuses the replacement' if replacement == push_expiry.REFUSED
+                              else 'it now expires 8 Dec 2026', text)
+                self.orch.set_state.assert_called_once_with('pid', 'old', 'done')
+                self.assertEqual(self.orch.create_issue.call_count, 2)
+                self.assertEqual([item['issue_id'] for item in runs.open_push_token_items(self.conn, 'dd')],
+                                 ['new'])
+
+    def test_github_failure_retries_on_the_same_day(self):
+        at = self.days_before(EXPIRY, 7)
+        with mock.patch.object(github, 'push_token_expiry',
+                               side_effect=github.GitHubError('down', status=503)):
+            self.check(at)
+        self.orch.create_issue.assert_not_called()
+        self.check(at)
+        self.check(at)
+        self.orch.create_issue.assert_called_once()
+        self.assertEqual(self.asked, [TOKEN])
+        self.assertEqual(len(self.bark_messages()), 1)
+
+    def test_plane_failure_retries_without_repeating_the_alert(self):
+        at = self.days_before(EXPIRY, 7)
+        self.orch.create_issue.side_effect = plane.PlaneError('down', status=503)
+        self.check(at)
+        self.orch.create_issue.side_effect = None
+        self.check(at)
+        self.check(at)
         self.assertEqual(self.orch.create_issue.call_count, 2)
+        self.assertEqual(len(runs.open_push_token_items(self.conn, 'dd')), 1)
+        self.assertEqual(len(self.bark_messages()), 1)
+
+    def test_interrupted_check_retries_without_repeating_the_alert(self):
+        at = self.days_before(EXPIRY, 7)
+        self.orch.create_issue.side_effect = KeyboardInterrupt
+        with self.assertRaises(KeyboardInterrupt):
+            self.check(at)
+        self.orch.create_issue.side_effect = None
+        self.check(at)
+        self.assertEqual(len(runs.open_push_token_items(self.conn, 'dd')), 1)
+        self.assertEqual(len(self.bark_messages()), 1)
+
+    def test_close_failure_retries_on_the_same_day(self):
+        self.check(self.days_before(EXPIRY, 10))
+        self.logins['/fake/dd'] = NEW_TOKEN
+        self.replies[NEW_TOKEN] = None
+        self.orch.set_state.side_effect = plane.PlaneError('down', status=503)
+        at = self.days_before(EXPIRY, 9)
+        self.check(at)
+        self.assertEqual(len(runs.open_push_token_items(self.conn, 'dd')), 1)
+        self.orch.has_comment_with.return_value = True
+        self.orch.set_state.side_effect = None
+        self.check(at)
+        self.assertEqual(runs.open_push_token_items(self.conn, 'dd'), [])
+        self.orch.comment.assert_called_once()
+
 
     def test_bark_at_thirty_seven_and_one_days(self):
         self.cfg['alerts'] = {}

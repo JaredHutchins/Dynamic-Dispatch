@@ -1268,6 +1268,8 @@ the push login Git itself would use for the project's repository address (the
 one `--save-push-login` saves) and asks GitHub once per distinct token when it
 expires. The token stays in memory and is masked; DD keeps only a one-way
 fingerprint, to know it again. A token with no expiry date gives no warning.
+Failed or interrupted checks retry on the next hourly monitor pass, including
+on the same day, without repeating recorded work items or Bark alerts.
 
 - **Plane:** when a token expires within 14 days, DD adds one work item to
   each affected project's Product Backlog, labelled Human so no agent builds
@@ -1277,7 +1279,9 @@ fingerprint, to know it again. A token with no expiry date gives no warning.
   description gives the steps in "Renew the push token". When a later check
   finds a working token more than 14 days from expiry, or one with no expiry,
   DD comments "The push token was renewed; it now expires ..." (or "it no
-  longer expires") and moves the item to Done if `states.done` is set.
+  longer expires") and moves the item to Done if `states.done` is set. A different
+  token also resolves the previous token’s warning, even if the replacement
+  expires soon or is refused; the replacement gets its own warning.
 - **Bark:** if it is set up, active alerts with sound at 30, 7 and 1 days
   before expiry, and once when GitHub refuses the token. Without Bark the work
   item is the only warning.

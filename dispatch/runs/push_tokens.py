@@ -10,6 +10,11 @@ def claim_push_token_notice(conn, key):
         return conn.execute("INSERT OR IGNORE INTO push_token_notices VALUES (?)", (key,)).rowcount == 1
 
 
+def push_token_notice_recorded(conn, key):
+    """Whether a check or alert has already been recorded."""
+    return conn.execute("SELECT 1 FROM push_token_notices WHERE key = ?", (key,)).fetchone() is not None
+
+
 def push_token_item(conn, project, token, expiry):
     return conn.execute("SELECT * FROM push_token_items WHERE project = ? AND token = ? AND expiry = ?",
                         (project, token, expiry)).fetchone()
