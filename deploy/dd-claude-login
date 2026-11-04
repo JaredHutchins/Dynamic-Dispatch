@@ -86,6 +86,23 @@ def save_token(path, gid, key, token):
             os.unlink(temporary)
 
 
+def login_rejected(reply):
+    # Inspect nested API errors and CLI result text, but never relay either.
+    if isinstance(reply, dict):
+        for key, value in reply.items():
+            if key in ('status', 'status_code', 'statusCode') and str(value) in ('401', '403'):
+                return True
+            if login_rejected(value):
+                return True
+    elif isinstance(reply, list):
+        return any(login_rejected(value) for value in reply)
+    elif isinstance(reply, str):
+        return bool(re.search(
+            r'authentication_error|authentication failed|failed to authenticate|'
+            r'api error:\s*(401|403)\b', reply, re.IGNORECASE))
+    return False
+
+
 def smoke_test(account, key, token):
     user = pwd.getpwnam(account)
     if user.pw_uid == 0:
@@ -105,8 +122,11 @@ def smoke_test(account, key, token):
         if result.returncode or data.get('is_error'):
             # Never relay provider text: even error fields can contain credentials.
             error = 'ModelError'
-            if data.get('subtype') in ('error_max_turns', 'error_during_execution',
-                                     'error_max_budget_usd'):
+            if login_rejected(data):
+                error = ('login rejected. Make a new token with claude setup-token '
+                         'and run this helper again.')
+            elif data.get('subtype') in ('error_max_turns', 'error_during_execution',
+                                         'error_max_budget_usd'):
                 error = data['subtype']
         elif str(data.get('result', '')).strip().rstrip('.!') == 'OK':
             print('Claude replied OK')
@@ -138,7 +158,7 @@ def main():
                 return 1
         save_token(path, gid, key, token)
         print(f'Saved {kind} ({len(token)} characters).')
-        if input('Run one small paid Claude smoke test (60-second limit)? [y/N] ').strip().lower() in ('y', 'yes'):
+        if input('Test the login now with one tiny request to Claude (60-second limit)? [y/N] ').strip().lower() in ('y', 'yes'):
             return 0 if smoke_test(account, key, token) else 1
         return 0
     except ValueError as exc:

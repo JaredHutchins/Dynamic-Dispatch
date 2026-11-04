@@ -140,6 +140,52 @@ class ClaudeLoginTests(unittest.TestCase):
         self.assertIn('TimeoutExpired', self.output.getvalue())
         self.assertNotIn(self.token, self.output.getvalue())
 
+    def test_rejected_login_gives_safe_recovery_message(self):
+        user = SimpleNamespace(pw_uid=123, pw_gid=456, pw_dir='/tmp')
+        private_text = 'provider detail that must stay hidden ' + self.token
+        errors = [
+            {'result': 'failed to authenticate ' + private_text},
+            {'error': {'type': 'authentication_error', 'message': private_text}},
+            {'errors': ['Authentication failed ' + private_text]},
+            {'result': 'API Error: 401 ' + private_text},
+            {'result': 'API Error: 403 ' + private_text},
+        ]
+        for field in ('status', 'status_code', 'statusCode'):
+            for status in (401, '401', 403, '403'):
+                errors.append({'error': {field: status, 'message': private_text}})
+        with mock.patch.object(login.pwd, 'getpwnam', return_value=user), \
+             mock.patch.object(login.os, 'getgrouplist', return_value=[456]), \
+             mock.patch.object(login.subprocess, 'run') as run:
+            for index, error in enumerate(errors):
+                with self.subTest(error=index):
+                    self.output.seek(0)
+                    self.output.truncate(0)
+                    reply = dict(error, is_error=True)
+                    run.return_value = SimpleNamespace(
+                        returncode=1, stdout=json.dumps(reply), stderr=private_text)
+                    self.assertFalse(login.smoke_test('agent', 'KEY', self.token))
+                    self.assertEqual(self.output.getvalue(),
+                                     'Claude smoke test: login rejected. Make a new token '
+                                     'with claude setup-token and run this helper again.\n')
+                    self.assertNotIn(private_text, self.output.getvalue())
+                    self.assertNotIn(self.token, self.output.getvalue())
+
+    def test_other_model_error_stays_generic(self):
+        user = SimpleNamespace(pw_uid=123, pw_gid=456, pw_dir='/tmp')
+        reply = {'is_error': True, 'error': {'status': 500, 'message': self.token}}
+        with mock.patch.object(login.pwd, 'getpwnam', return_value=user), \
+             mock.patch.object(login.os, 'getgrouplist', return_value=[456]), \
+             mock.patch.object(login.subprocess, 'run', return_value=SimpleNamespace(
+                 returncode=1, stdout=json.dumps(reply), stderr=self.token)):
+            self.assertFalse(login.smoke_test('agent', 'KEY', self.token))
+        self.assertEqual(self.output.getvalue(), 'Claude smoke test: ModelError\n')
+
+    def test_smoke_test_prompt(self):
+        with mock.patch('builtins.input', return_value='n') as prompt:
+            self.assertEqual(self.run_main(self.token, prompt), 0)
+        prompt.assert_called_once_with(
+            'Test the login now with one tiny request to Claude (60-second limit)? [y/N] ')
+
     def test_hidden_prompt_restores_terminal_on_interruption(self):
         terminal = mock.mock_open()
         terminal.return_value.readline.side_effect = KeyboardInterrupt

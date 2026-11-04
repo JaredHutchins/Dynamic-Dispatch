@@ -921,9 +921,11 @@ need confirmation. API keys are also accepted; the helper chooses the login
 variable and atomically saves exactly one line, owned by root and Claude's
 group with mode 640.
 
-Accept the optional small paid smoke test to check the login as Claude's
-account. Within 60 seconds it prints `Claude replied OK` or an error type,
-never raw JSON or the token. Run the helper again to replace an expired login.
+The helper asks: "Test the login now with one tiny request to Claude (60-second limit)? [y/N]"
+Accept to check the login as Claude's account. It prints `Claude replied OK`
+or an error type, never raw JSON or the token. If Claude rejects the login,
+it tells you to make a new token with `claude setup-token` and run the helper
+again.
 
 Codex's login lives in its own home at `/home/dd-codex/.codex/auth.json`,
 readable only by `dd-codex`. Run the following commands from `/tmp` because

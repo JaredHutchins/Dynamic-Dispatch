@@ -313,10 +313,11 @@ It replaces the configured env file with one login line, owned by root and
 Claude's group with mode 640. Without config or a Claude agent it announces
 the defaults: `/etc/dynamic-dispatch/claude.env` and group `dd-agent`.
 
-Accept its optional smoke test to make one small paid model call as Claude's
-account, limited to 60 seconds. It prints `Claude replied OK` or an error
-type, without exposing the token or raw JSON. Renew an expired token by
-running the same commands again.
+The helper asks: "Test the login now with one tiny request to Claude (60-second limit)? [y/N]"
+Accept to check the login as Claude's account. It prints `Claude replied OK`
+or an error type, never raw JSON or the token. If Claude rejects the login,
+it tells you to make a new token with `claude setup-token` and run the helper
+again.
 
 ### Codex
 
