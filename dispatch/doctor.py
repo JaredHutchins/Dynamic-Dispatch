@@ -10,7 +10,7 @@ import sys
 import http.client
 from urllib.parse import urlsplit
 
-from . import config, container, doctor_sandbox, github, gitops, plane, proc, runs, services, testenv
+from . import config, container, doctor_sandbox, github, gitops, plane, proc, push_login, runs, services, testenv
 from .redact import MIN_SECRET_LENGTH
 
 MIN_PYTHON = (3, 11)
@@ -176,7 +176,7 @@ def run(path=None, *, project=None):
           'Check test_env_file permissions and settings; only root, DD and project agents may read it.')
     _check_prepare(cfg, check, require)
     _check_helpers(cfg, check, require)
-    _check_git(cfg, check, report)
+    _check_git(cfg, report)
     accounts = _check_agents(cfg, check, report, require)
     doctor_sandbox.check(cfg, accounts, CHECKOUT, path or config.DEFAULT_CONFIG_PATH, report)
     _check_services(cfg, accounts, check, report, require)
@@ -314,18 +314,24 @@ def _check_github(cfg, check, report, require):
         report('SKIP', 'GitHub expiry', 'skipped: the GitHub login check failed')
 
 
-def _check_git(cfg, check, report):
+# Each push check result's status and what to do about it.
+PUSH_REPORTS = {
+    gitops.PUSH_OK: ('OK', 'The saved Git login can push; a push dry run was accepted, and nothing was pushed.'),
+    gitops.PUSH_INVALID: ('FAIL', '; renew it with python3 main.py --save-push-login.'),
+    gitops.PUSH_NO_WRITE: ('FAIL', '; give the token Contents read and write access, '
+                           'then run python3 main.py --save-push-login.'),
+    gitops.PUSH_UNREACHABLE: ('WARN', '; check the network and run doctor again.'),
+    gitops.PUSH_NOT_DOWNLOADED: ('WARN', '.'),
+    gitops.PUSH_FAILED: ('FAIL', '.'),
+}
+
+
+def _check_git(cfg, report):
     for index, project in enumerate(cfg['projects'].values(), 1):
-        name = f'Git push login {index}'
-        reached = check(name, lambda: gitops.check_origin(project['repo_path']) or True,
-                        "The host's saved Git login can read the repository; nothing was pushed.",
-                        "Cannot reach origin from repo_path; check the clone, its remote and the host's saved "
-                        "Git login in ~/.git-credentials, as deploy/README.md describes.")
-        if reached:
-            report('WARN', name + ' write access',
-                   "write access can't be confirmed without pushing; DD's login alerts report a rejected push.")
-        else:
-            report('SKIP', name + ' write access', 'skipped: the ' + name + ' check failed')
+        result = push_login.check(project['repo_path'])
+        status, advice = PUSH_REPORTS[result]
+        reason = advice if result == gitops.PUSH_OK else push_login.RESULTS[result] + advice
+        report(status, f'Git push login {index}', reason)
 
 
 def _check_agents(cfg, check, report, require):

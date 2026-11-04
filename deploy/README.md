@@ -85,7 +85,31 @@ afterwards so the new group memberships apply. Then run the guided setup.
 
 ## Guided setup
 
-Run this as DD's account from the checkout, without sudo:
+First save the Git push login DD pushes story branches with. Run this as
+DD's account from the checkout, without sudo:
+
+    python3 main.py --save-push-login
+
+Use a fine-grained token with repository Contents: read and write permission
+on each project. The command asks for your GitHub username and then the
+token, which is hidden as you paste it and never printed. Paste the whole
+token, even if it spans lines, then press Return on an empty line; spaces and
+line breaks pasted with it are removed. It saves the login in Git's credential
+store for github.com, in `~/.git-credentials` with mode 600, replacing a
+saved login for the same username. If other GitHub logins are saved, it
+names each and asks whether to remove it, so Git uses the new one. It then
+checks each configured project with a push dry run to a throwaway branch
+name: Git signs in as for a real push, but nothing is created on GitHub and
+no hooks run. Each repository gets one line: `OK`;
+`rejected: the token is invalid or expired`;
+`rejected: the token has no write access to this repository`;
+`couldn't reach GitHub (not a token problem)`; or
+`not downloaded yet, checked after the first start`. Git can't ask for a
+password during the check, and each check gives up after a minute. With no
+config or no projects yet it says the check runs once a project is added.
+Use `--config /path/to/config.json` for a different configuration.
+
+Then run guided setup, also as DD's account from the checkout, without sudo:
 
     python3 main.py --setup
 
@@ -1058,16 +1082,26 @@ credentials) sends a login alert, and running out of quota (for example 429
 or RESOURCE_EXHAUSTED) cools Gemini down like any other usage limit. Gemini
 gives no reset time, so the cool-down lasts `usage_limit_cooldown_minutes`.
 
+## Renew the push token
+
+Regenerate the token on GitHub (Settings, Developer settings, Personal access
+tokens), with the same repository Contents: read and write permission. Then,
+as DD's account from the checkout, run the command, paste the new token and
+press Return on an empty line:
+
+    python3 main.py --save-push-login
+
+It replaces the saved login and checks each project, as "Guided setup"
+describes. No restart is needed: Git reads the saved login on each push.
+
 ## Tokens and when they expire
 
 - The fine-grained GitHub token named "dynamic-dispatch-pi4" was regenerated
   on 28 Sept 2026 for one year, so it expires around Sept 2027. It is stored
   in two places: `github.token` in `$DD_CHECKOUT/config.json` and
-  `~/.git-credentials`. Update both when it is renewed. The credentials file
-  holds one line exactly of the form `https://<USERNAME>:<TOKEN>@github.com`,
-  with your GitHub username and the real token in their places and nothing
-  else on the line.
-  A missing `@github.com` makes Git ask for a username.
+  `~/.git-credentials`. Update both when it is renewed: edit config for the
+  first, and run `python3 main.py --save-push-login` for the second (see
+  "Renew the push token").
 - The Claude login token was made in Sept 2026 and expires about a year
   later. It lives in `/etc/dynamic-dispatch/claude.env`.
 - The GitHub App private key lives at
@@ -1254,10 +1288,12 @@ sending a notification.
 The doctor also checks the rest of the host:
 
 - Python: DD needs 3.11 or newer.
-- Git push login: for each project, `git ls-remote` from its `repo_path`
-  reaches origin with the host's saved Git login (see "Tokens and when they
-  expire"). It pushes nothing, so write access is reported as a warning; a
-  rejected push raises a login alert on DD's first push.
+- Git push login: for each project, the same push dry run as
+  `--save-push-login`, from its `repo_path`, with the login Git itself would
+  push with (see "Renew the push token"). Nothing is pushed. It is OK when the
+  push would be accepted, FAIL when the token is invalid or expired or has no
+  write access to the repository, and WARN when GitHub can't be reached or the
+  project isn't downloaded yet.
 - Agents: each agent's command is on the launcher's PATH (`/usr/local/bin`,
   `/usr/bin` or `/bin`), its account exists, and its env file, if it has one,
   is owned by root and the agent's group with mode 640 (see "Agent logins").

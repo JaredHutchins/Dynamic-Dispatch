@@ -21,7 +21,7 @@ from datetime import datetime
 from pathlib import Path
 
 from dispatch import (add_project, alerts, choose, cleanup, config, cycles, doctor, github, gitops, lights, mainhealth, plane,
-                      plane_apps, plane_install, proc, redact, runs, selfupdate, setup, sprint, stories, sync, worker)
+                      plane_apps, plane_install, proc, push_login, redact, runs, selfupdate, setup, sprint, stories, sync, worker)
 from dispatch.redact import log, warn
 from dispatch.stories import story_ref
 
@@ -521,6 +521,8 @@ def main():
     parser.add_argument("--doctor", action="store_true", help="Check setup without changing it")
     parser.add_argument("--add-project", action="store_true", help="Set up a project for DD")
     parser.add_argument("--setup", action="store_true", help="Write config.json by answering questions")
+    parser.add_argument("--save-push-login", action="store_true",
+                        help="Save the GitHub login Git pushes with, and check it can push to each project")
     parser.add_argument("--plane-install-link", metavar="IDENTITY",
                         help="Print the install link for a Plane app: orchestrator, or an agent's name in config")
     parser.add_argument("--redirect-uri", default=plane_apps.DEFAULT_REDIRECT_URI,
@@ -528,6 +530,8 @@ def main():
     args = parser.parse_args()
     if args.plane_install_link:
         return plane_install.run(args.config, args.plane_install_link, args.redirect_uri)
+    if args.save_push_login:
+        return push_login.run(args.config)
     if args.setup:
         return setup.run(args.config)
     if args.add_project:
