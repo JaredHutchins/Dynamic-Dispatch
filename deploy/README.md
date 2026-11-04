@@ -1092,7 +1092,10 @@ press Return on an empty line:
     python3 main.py --save-push-login
 
 It replaces the saved login and checks each project, as "Guided setup"
-describes. No restart is needed: Git reads the saved login on each push.
+describes. No restart is needed: Git reads the saved login on each push. DD
+warns before the token expires, with a Human work item in each project's
+Product Backlog and Bark alerts (see "Login health alerts"); the next daily
+check after renewing comments on the item and moves it to Done.
 
 ## Tokens and when they expire
 
@@ -1258,7 +1261,35 @@ several thresholds, it sends each crossed threshold once. An unreadable expiry
 or network failure records at most one daily system warning event (no story).
 With a GitHub App, or no `github.token`, DD skips this check and logs nothing
 about it; App installation tokens renew themselves.
-These checks never hold up stories. Claude and Plane expiry are not checked.
+
+DD also warns before the Git push token expires, whether GitHub is used
+through an App or `github.token`. About once a day, for each project, it reads
+the push login Git itself would use for the project's repository address (the
+one `--save-push-login` saves) and asks GitHub once per distinct token when it
+expires. The token stays in memory and is masked; DD keeps only a one-way
+fingerprint, to know it again. A token with no expiry date gives no warning.
+
+- **Plane:** when a token expires within 14 days, DD adds one work item to
+  each affected project's Product Backlog, labelled Human so no agent builds
+  it: "Renew the GitHub push token (expires 5 Dec 2026)", in local time. A
+  token GitHub refuses gets "The GitHub push token isn't working". Each item
+  is made once per token and expiry date, across restarts too, and its
+  description gives the steps in "Renew the push token". When a later check
+  finds a working token more than 14 days from expiry, or one with no expiry,
+  DD comments "The push token was renewed; it now expires ..." (or "it no
+  longer expires") and moves the item to Done if `states.done` is set.
+- **Bark:** if it is set up, active alerts with sound at 30, 7 and 1 days
+  before expiry, and once when GitHub refuses the token. Without Bark the work
+  item is the only warning.
+
+The item uses the settings `--add-project` records for every project:
+`states.product_backlog` and `human_only_label_id`. A project set up before
+`--add-project` existed, or by hand, may lack them; doctor fails for it, and
+when a warning is due DD makes no item there (an unlabelled one could be
+picked up by an agent) and logs a warning instead, plus a Bark alert. Run
+`--add-project` for that project again to fix it.
+These checks never hold up stories. Claude, Plane app and agent login expiry
+are not checked.
 
 Keep phone sounds enabled for Bark's active notifications. Without configured
 Bark delivery, daily warning events still work. Delivery is best effort, as
@@ -1294,6 +1325,13 @@ The doctor also checks the rest of the host:
   push would be accepted, FAIL when the token is invalid or expired or has no
   write access to the repository, and WARN when GitHub can't be reached or the
   project isn't downloaded yet.
+- Git push login expiry: for each project, when the token Git would push with
+  expires, asking GitHub once per distinct token. OK with the date, or when it
+  never expires; WARN within 14 days; FAIL when it has expired or GitHub
+  refuses it. SKIP when Git has no saved login for the repository.
+- Plane project push token warning: each project has `states.product_backlog`
+  and `human_only_label_id`, which the push token warning needs; FAIL says
+  "Run --add-project for this project again to fix it".
 - Agents: each agent's command is on the launcher's PATH (`/usr/local/bin`,
   `/usr/bin` or `/bin`), its account exists, and its env file, if it has one,
   is owned by root and the agent's group with mode 640 (see "Agent logins").

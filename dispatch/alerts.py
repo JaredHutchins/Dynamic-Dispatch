@@ -11,7 +11,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from . import config, github, logins, plane, runs
+from . import config, github, logins, plane, push_expiry, runs
 from .redact import MIN_SECRET_LENGTH, scrub, warn
 
 MAX_PAYLOAD = 3000
@@ -130,12 +130,25 @@ class Health:
             finally:
                 conn.close()
 
+    def check_push_tokens(self, at=None):
+        """The Git push token's daily expiry check, whether GitHub is used through an App or github.token."""
+        conn = runs.connect(self.cfg['db_path'], initialize=False)
+        try:
+            push_expiry.check(self.cfg, conn, lambda message: send(self.cfg, None, None, message,
+                                                                    suffix='DD push token', level='active'), at)
+        finally:
+            conn.close()
+
     def work(self):
         while True:
             try:
                 self.check_expiry()
             except Exception:
                 warn('Could not record GitHub expiry warning; carrying on.')
+            try:
+                self.check_push_tokens()
+            except Exception:
+                warn('Could not check the Git push token expiry; carrying on.')
             threading.Event().wait(3600)
 
 

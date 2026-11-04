@@ -9,6 +9,7 @@ from datetime import datetime
 
 import base64
 import json
+import re
 import subprocess
 import time
 import threading
@@ -42,7 +43,8 @@ class GitHubError(Exception):
         self.status = status
 
 
-def _request(method, path, token, payload=None, *, login_key=None, expiry=False):
+def _request(method, path, token, payload=None, *, login_key=None, expiry=False, report=True):
+    """report=False leaves login alerts to the caller, which warns about that login its own way."""
     identity = logins.fingerprint(token)
     key = login_key or _token_logins.get(identity, "github:" + identity)
     name = "GitHub App login" if login_key else "GitHub API login"
@@ -62,14 +64,15 @@ def _request(method, path, token, payload=None, *, login_key=None, expiry=False)
     )
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
-            logins.login(key, name, where, False)
+            if report:
+                logins.login(key, name, where, False)
             if expiry:
                 return resp.headers.get("github-authentication-token-expiration")
             body = resp.read()
             return json.loads(body) if body else {}
     except urllib.error.HTTPError as e:
         with e:
-            if e.code == 401:
+            if e.code == 401 and report:
                 logins.login(key, name, where + " (HTTP 401)", True)
             detail = e.read().decode(errors="replace")[:500]
             raise GitHubError(scrub(f"{method} {path} -> {e.code}: {detail}"), status=e.code) from None
@@ -350,12 +353,27 @@ def main_revision(repo, base, token):
     return _request("GET", f"/repos/{repo}/branches/{branch}", token)["commit"]["sha"]
 
 
-def token_expiry(token):
-    raw = _request("GET", "/rate_limit", token, expiry=True)
-    expiry = datetime.fromisoformat(raw.replace("Z", "+00:00").replace(" UTC", "+00:00"))
+def _expiry(raw):
+    # GitHub gives "2026-12-05 10:00:00 UTC", or an offset such as "-0700" after a space.
+    raw = re.sub(r" ?([+-]\d\d):?(\d\d)$", r"\1:\2", raw.replace("Z", "+00:00").replace(" UTC", "+00:00"))
+    expiry = datetime.fromisoformat(raw)
     if expiry.tzinfo is None:
         raise ValueError("Expiry has no timezone")
     return expiry
+
+
+def token_expiry(token):
+    return _expiry(_request("GET", "/rate_limit", token, expiry=True))
+
+
+def push_token_expiry(token):
+    """When the Git push token expires, or None if it never does.
+
+    Raises GitHubError with status 401 if GitHub refuses the token. The push
+    token's own warning reports that, so no separate login alert is sent.
+    """
+    raw = _request("GET", "/rate_limit", token, expiry=True, report=False)
+    return _expiry(raw) if raw else None
 
 
 def installation_details(github_cfg):

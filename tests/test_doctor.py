@@ -33,8 +33,9 @@ class Doctor(unittest.TestCase):
                                              'env_file': '/fake-private-env'}},
             'projects': {'fake-private-project': {'plane_project_id': 'project',
                          'github_repo': 'example/repo', 'repo_path': '/fake-private-repo',
-                         'states': {'in_progress': 'state'},
-                         'agent_label_id': 'label', 'agents': ['fake-private-name']}},
+                         'states': {'in_progress': 'state', 'product_backlog': 'state'},
+                         'agent_label_id': 'label', 'human_only_label_id': 'label',
+                         'agents': ['fake-private-name']}},
             'alerts': {'bark_url': 'https://bark.invalid', 'device_keys': ['fake-device-key'],
                        'encryption_key': 'x' * 32}}
         self.client = mock.Mock()
@@ -107,6 +108,10 @@ class Doctor(unittest.TestCase):
             return proc.Result(self.sudo.get(command[4], 1), '', 'fake-private-sudo', False, False)
 
         self.push = self.enterContext(mock.patch.object(gitops, 'check_push', return_value=gitops.PUSH_OK))
+        self.push_login = self.enterContext(mock.patch.object(gitops, 'push_login',
+                                                              return_value='fake-private-push-credential'))
+        self.push_expiry = self.enterContext(mock.patch.object(
+            github, 'push_token_expiry', return_value=datetime.now(timezone.utc) + timedelta(days=90)))
         self.which = self.enterContext(mock.patch.object(shutil, 'which', return_value='/usr/bin/fake'))
         self.account = self.enterContext(mock.patch.object(pwd, 'getpwnam', return_value=mock.Mock()))
         self.group = self.enterContext(mock.patch.object(doctor.config, 'agent_group', return_value=1234))
@@ -393,6 +398,56 @@ class Doctor(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("FAIL Git push login 1: couldn't check", output)
         self.assertNotIn('fake-private', output)
+
+    def test_push_token_expiry(self):
+        now = datetime.now(timezone.utc)
+        cases = [(now + timedelta(days=90), 0, 'OK Git push login 1 expiry: The push token expires on '),
+                 (None, 0, "OK Git push login 1 expiry: The push token doesn't expire."),
+                 (now + timedelta(days=10), 0, 'WARN Git push login 1 expiry: The push token expires on '),
+                 (now - timedelta(days=1), 1, 'FAIL Git push login 1 expiry: The push token expired on '),
+                 (github.GitHubError('fake-private-refused', status=401), 1,
+                  'FAIL Git push login 1 expiry: GitHub refuses the push token; regenerate it on GitHub, '
+                  'then run python3 main.py --save-push-login.'),
+                 (github.GitHubError('fake-private-down', status=503), 0,
+                  "WARN Git push login 1 expiry: couldn't ask GitHub when the push token expires")]
+        for reply, status, line in cases:
+            with self.subTest(reply=reply):
+                self.push_expiry.reset_mock()
+                self.push_expiry.side_effect = reply if isinstance(reply, Exception) else None
+                self.push_expiry.return_value = reply
+                code, output = self.run_doctor()
+                self.assertEqual(code, status)
+                self.assertIn(line, output)
+                self.assertNotIn('fake-private', output)
+                self.push_expiry.assert_called_once_with('fake-private-push-credential')
+        self.push_login.return_value = None
+        code, output = self.run_doctor()
+        self.assertIn('SKIP Git push login 1 expiry: skipped: Git has no saved push login', output)
+
+    def test_one_github_question_for_each_push_token(self):
+        project = next(iter(self.cfg['projects'].values()))
+        self.cfg['projects']['second'] = dict(project, repo_path='/fake-private-second')
+        code, output = self.run_doctor()
+        self.assertEqual(code, 0)
+        self.push_expiry.assert_called_once()
+        self.assertIn('OK Git push login 2 expiry:', output)
+
+    def test_push_token_warning_settings(self):
+        project = next(iter(self.cfg['projects'].values()))
+        self.assertIn('OK Plane project 1 push token warning:', self.run_doctor()[1])
+        for missing in ('product_backlog', 'human_only_label_id'):
+            with self.subTest(missing=missing):
+                saved = dict(project), dict(project['states'])
+                if missing == 'product_backlog':
+                    del project['states'][missing]
+                else:
+                    del project[missing]
+                code, output = self.run_doctor()
+                project.clear()
+                project.update(saved[0], states=saved[1])
+                self.assertEqual(code, 1)
+                self.assertIn('FAIL Plane project 1 push token warning:', output)
+                self.assertIn('Run --add-project for this project again to fix it.', output)
 
     def test_agent_checks(self):
         code, output = self.run_doctor()

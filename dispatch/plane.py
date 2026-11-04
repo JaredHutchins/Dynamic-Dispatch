@@ -165,11 +165,12 @@ class Plane:
     def delete(self, path):
         return self._request("DELETE", path)
 
-    def create_issue(self, project_id, name, description, state):
-        """Create a story with scrubbed, escaped and bounded plain-text content."""
-        return self.post(f"/projects/{project_id}/issues/", {
-            "name": scrub(name)[:255], "description_html": _description_html(description), "state": state,
-        })
+    def create_issue(self, project_id, name, description, state, labels=None):
+        """Create a story with scrubbed, escaped and bounded plain-text content, and any label IDs given."""
+        payload = {"name": scrub(name)[:255], "description_html": _description_html(description), "state": state}
+        if labels:
+            payload["labels"] = list(labels)
+        return self.post(f"/projects/{project_id}/issues/", payload)
 
     def set_description(self, project_id, issue_id, description):
         """Replace a work item's description with scrubbed, escaped and bounded plain text."""
