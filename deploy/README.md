@@ -906,14 +906,24 @@ Check it before restarting as above.
 
 ## Agent logins
 
-Claude's login token lives in `/etc/dynamic-dispatch/claude.env`, owned by
-`root:dd-agent` with mode 640. The file has one line beginning
-`CLAUDE_CODE_OAUTH_TOKEN=` followed by the token, with no quotes and no
-`export`.
+Create a Claude subscription token as Claude's account, then save it from
+the checkout with the helper:
 
-Run this on another computer to create the Claude login token:
+    (cd /tmp && sudo -u dd-agent -H claude setup-token)
+    sudo python3 deploy/dd-claude-login
 
-    claude setup-token
+Use `--config /path/to/config.json` if the config is outside the checkout.
+The helper reads Claude's env file and group from config; without config or
+a Claude agent it announces `/etc/dynamic-dispatch/claude.env` and group
+`dd-agent` as defaults. Paste every line at the hidden prompt, then press
+Return on an empty line. Whitespace is removed and short subscription tokens
+need confirmation. API keys are also accepted; the helper chooses the login
+variable and atomically saves exactly one line, owned by root and Claude's
+group with mode 640.
+
+Accept the optional small paid smoke test to check the login as Claude's
+account. Within 60 seconds it prints `Claude replied OK` or an error type,
+never raw JSON or the token. Run the helper again to replace an expired login.
 
 Codex's login lives in its own home at `/home/dd-codex/.codex/auth.json`,
 readable only by `dd-codex`. Run the following commands from `/tmp` because

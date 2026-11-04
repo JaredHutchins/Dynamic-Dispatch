@@ -1,0 +1,155 @@
+#!/usr/bin/python3
+"""Save Claude credentials without depending on DD or shell parsing."""
+
+import argparse
+import grp
+import json
+import os
+from pathlib import Path
+import pwd
+import re
+import subprocess
+import tempfile
+import termios
+
+DEFAULT_CONFIG = Path(__file__).resolve().parent.parent / 'config.json'
+DEFAULT_ENV = '/etc/dynamic-dispatch/claude.env'
+
+
+def destination(config):
+    try:
+        with Path(config).open() as stream:
+            cfg = json.load(stream)
+    except FileNotFoundError:
+        cfg = {}
+    agent = cfg.get('agents', {}).get('claude-code')
+    if agent is None:
+        print('No config or claude-code agent; using /etc/dynamic-dispatch/claude.env and group dd-agent.')
+        return Path(DEFAULT_ENV), 'dd-agent', grp.getgrnam('dd-agent').gr_gid
+    account = agent.get('run_as') or cfg.get('sandbox', {}).get('user', 'dd-agent')
+    group = agent.get('group')
+    gid = grp.getgrnam(group).gr_gid if group else pwd.getpwnam(account).pw_gid
+    path = agent.get('env_file')
+    if not isinstance(path, str) or not Path(path).is_absolute():
+        raise ValueError('Claude env_file must be an absolute path in config.json')
+    return Path(path), account, gid
+
+
+def read_token():
+    print("Paste Claude's token, then press Return on an empty line")
+    lines = []
+    # Keep echo disabled for the entire paste. Repeated getpass calls can
+    # flush queued lines when they change terminal settings between prompts.
+    with open('/dev/tty', 'r') as terminal:
+        original = termios.tcgetattr(terminal.fileno())
+        hidden = original.copy()
+        hidden[3] &= ~(termios.ECHO | termios.ECHONL)
+        try:
+            termios.tcsetattr(terminal.fileno(), termios.TCSANOW, hidden)
+            while True:
+                line = terminal.readline()
+                if not line:
+                    raise EOFError
+                if line == '\n':
+                    break
+                lines.append(line)
+        finally:
+            termios.tcsetattr(terminal.fileno(), termios.TCSANOW, original)
+            print()
+    return ''.join(''.join(lines).split())
+
+
+def login_kind(token):
+    if not re.fullmatch(r'[A-Za-z0-9_-]+', token):
+        raise ValueError('Token is empty or contains invalid characters')
+    if token.startswith('sk-ant-oat01-'):
+        return 'CLAUDE_CODE_OAUTH_TOKEN', 'subscription token'
+    if token.startswith('sk-ant-api'):
+        return 'ANTHROPIC_API_KEY', 'API key'
+    raise ValueError('Unrecognized token prefix; expected a Claude subscription token or Anthropic API key')
+
+
+def save_token(path, gid, key, token):
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', dir=path.parent, prefix='.claude-login-',
+                                         delete=False) as stream:
+            temporary = stream.name
+            stream.write(f'{key}={token}\n')
+            stream.flush()
+            os.fchown(stream.fileno(), 0, gid)
+            os.fchmod(stream.fileno(), 0o640)
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary and os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def smoke_test(account, key, token):
+    user = pwd.getpwnam(account)
+    if user.pw_uid == 0:
+        raise ValueError('Claude account must not be root')
+    env = {'HOME': user.pw_dir, 'USER': account, 'LOGNAME': account,
+           'PATH': '/usr/local/bin:/usr/bin:/bin', key: token}
+    try:
+        result = subprocess.run(
+            ['claude', '-p', '--model', 'haiku', '--max-turns', '1',
+             '--tools', '', '--output-format', 'json'],
+            input='Reply with OK', text=True, capture_output=True, timeout=60,
+            cwd='/tmp', env=env, user=user.pw_uid, group=user.pw_gid,
+            extra_groups=os.getgrouplist(account, user.pw_gid))
+        data = json.loads(result.stdout)
+        if not isinstance(data, dict):
+            raise ValueError('Invalid response')
+        if result.returncode or data.get('is_error'):
+            # Never relay provider text: even error fields can contain credentials.
+            error = 'ModelError'
+            if data.get('subtype') in ('error_max_turns', 'error_during_execution',
+                                     'error_max_budget_usd'):
+                error = data['subtype']
+        elif str(data.get('result', '')).strip().rstrip('.!') == 'OK':
+            print('Claude replied OK')
+            return True
+        else:
+            error = 'UnexpectedReply'
+    except subprocess.TimeoutExpired:
+        error = 'TimeoutExpired'
+    except (ValueError, OSError) as exc:
+        error = type(exc).__name__
+    print(f'Claude smoke test: {error}')
+    return False
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--config', type=Path, default=DEFAULT_CONFIG)
+    args = parser.parse_args()
+    if os.geteuid() != 0:
+        print('Run as root: use sudo on a host or --user root in the container.')
+        return 1
+    try:
+        path, account, gid = destination(args.config)
+        token = read_token()
+        key, kind = login_kind(token)
+        if key == 'CLAUDE_CODE_OAUTH_TOKEN' and len(token) < 100:
+            print('This looks cut short; paste the whole token, including any second line')
+            if input('Save anyway? [y/N] ').strip().lower() not in ('y', 'yes'):
+                return 1
+        save_token(path, gid, key, token)
+        print(f'Saved {kind} ({len(token)} characters).')
+        if input('Run one small paid Claude smoke test (60-second limit)? [y/N] ').strip().lower() in ('y', 'yes'):
+            return 0 if smoke_test(account, key, token) else 1
+        return 0
+    except ValueError as exc:
+        # JSON decoding errors may include config contents; only our fixed messages are safe.
+        print('Invalid config.json' if isinstance(exc, json.JSONDecodeError) else str(exc))
+    except (OSError, KeyError, TypeError, AttributeError, termios.error) as exc:
+        print(f'Claude login failed: {type(exc).__name__}; check config, account, permissions and terminal.')
+    except (EOFError, KeyboardInterrupt):
+        print('\nClaude login cancelled.')
+    return 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
