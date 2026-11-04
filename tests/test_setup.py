@@ -136,14 +136,14 @@ class SetupTests(unittest.TestCase):
         self.addCleanup(github._installation_tokens.clear)
         self.addCleanup(redact.set_secrets, [])
 
-    def run_setup(self, answers, *, add_project=0):
+    def run_setup(self, answers, *, add_project=0, accounts=()):
         terminal = Terminal(answers)
         with contextlib.redirect_stdout(self.output), contextlib.redirect_stderr(self.output), \
                 mock.patch('builtins.input', terminal.input), \
                 mock.patch('getpass.getpass', terminal.getpass), \
                 mock.patch('urllib.request.urlopen', self.services), \
                 mock.patch.object(Path, 'home', return_value=self.home), \
-                mock.patch.object(setup, '_account_exists', return_value=False), \
+                mock.patch.object(setup, '_account_exists', side_effect=lambda name: name in accounts), \
                 mock.patch('dispatch.setup.add_project.run', return_value=add_project) as projects, \
                 mock.patch('dispatch.setup.doctor.run', return_value=0) as doctor:
             result = setup.run(self.path)
@@ -549,6 +549,27 @@ class SetupTests(unittest.TestCase):
         result, *_ = self.run_setup(answers)
         self.assertEqual(result, 0)
         self.assertEqual(list(json.loads(self.path.read_text())['agents']), ['claude-code'])
+
+    def test_an_agent_saved_in_the_answers_is_offered_again(self):
+        def interrupt():
+            raise KeyboardInterrupt
+        # Only Codex's account exists, but the user picks Claude, whose section passes before Ctrl+C.
+        answers = self.first_answers()
+        result, terminal, _, _ = self.run_setup(answers[:18] + ['claude'] + answers[19:25] + [interrupt],
+                                                accounts=('dd-codex',))
+        self.assertEqual(result, 1)
+        self.assertIn('Agents chosen in the installer (claude codex gemini) [codex]: ', terminal.prompts)
+        self.assertEqual(list(self.saved()['agents']), ['claude-code'])
+
+        # Enter at the agent question keeps the saved choice, Claude alone, and each of its saved answers.
+        result, terminal, _, _ = self.run_setup([''] * 16 + ['no', 'no'], accounts=('dd-codex',))
+        self.assertEqual(result, 0)
+        self.assertIn('Agents chosen in the installer (claude codex gemini) [claude]: ', terminal.prompts)
+        agents = config.load(self.path, allow_empty_projects=True)['agents']
+        self.assertEqual(agents['claude-code']['plane_token'], CLAUDE)
+        self.assertEqual(agents['claude-code']['git_author']['email'], 'claude@example.com')
+        self.assertFalse(self.progress.exists())
+        self.assert_no_secret_leaked()
 
     def test_one_backup_per_run(self):
         self.run_setup(self.first_answers())

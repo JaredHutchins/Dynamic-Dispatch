@@ -256,11 +256,16 @@ def _keep(current, value, answer=None):
     return current if current is not None and _text(current) in (value, answer) else value
 
 
-def _choose_agents(agents, kept):
+def _choose_agents(agents, kept, resumed):
     """Add the installer's agents the user names; agents already in config.json (kept) stay."""
     configured = {short for short, (name, _) in AGENTS.items() if name in kept}
-    installed = {short for short, (_, template) in AGENTS.items() if _account_exists(template['run_as'])}
-    current = ' '.join(short for short in AGENTS if short in configured | installed) or 'claude codex'
+    if resumed:
+        # The saved answer is the earlier run's choice, so Enter keeps it rather than redetecting.
+        offered = {short for short, (name, _) in AGENTS.items() if name in agents}
+    else:
+        offered = configured | {short for short, (_, template) in AGENTS.items()
+                                if _account_exists(template['run_as'])}
+    current = ' '.join(short for short in AGENTS if short in offered) or 'claude codex'
 
     def check(value):
         names = value.split()
@@ -286,10 +291,10 @@ def _account_exists(name):
         return False
 
 
-def _agents(cfg, orchestrator, kept, passed):
+def _agents(cfg, orchestrator, kept, resumed, passed):
     """Ask for each agent's login and commit details, calling passed as each one's checks succeed."""
     agents = cfg.setdefault('agents', {})
-    _choose_agents(agents, kept)
+    _choose_agents(agents, kept, resumed)
     users = {orchestrator}
     for name, agent in agents.items():
         who = agent.get('display_name') or name
@@ -391,7 +396,7 @@ def _sections(path, original, cfg):
     passed()
     _github(cfg)
     passed()
-    _agents(cfg, orchestrator, kept, passed)
+    _agents(cfg, orchestrator, kept, saved is not None and 'agents' in saved, passed)
     _alerts(cfg)
     passed()
     cfg.setdefault('projects', {})
