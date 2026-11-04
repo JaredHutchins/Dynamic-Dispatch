@@ -91,16 +91,16 @@ Run this as DD's account from the checkout, without sudo:
 
 Have these ready first; setup tells you where to make them but makes none:
 
-- The Plane web and API addresses and workspace slug, and a personal token
-  or installed app's client ID, client secret and installation ID for each
-  identity. See [Set up Plane Cloud](PLANE_CLOUD.md) for creating bots.
-  Setup offers Cloud's API address separately from its web address.
+- The Plane site address (for Plane Cloud, `https://app.plane.so`) and
+  workspace slug, and a personal token or installed app's client ID, client
+  secret and installation ID for each identity. See
+  [Set up Plane Cloud](PLANE_CLOUD.md) for creating bots. Setup offers
+  Cloud's API address separately from its web address.
 - A GitHub App for DD with contents read, pull requests write and commit
   statuses write, installed on your repositories, and its private key saved
   on this machine with `chmod 600`. A fine-grained token works instead, but
   `--add-project` needs the App.
-- The approver's GitHub username, and their Plane user ID if you will use
-  sprint-pull.
+- The approver's GitHub username.
 
 Setup asks which agents the installer set up (`claude`, `codex`, `gemini`)
 and checks each answer as it is given: the Plane address and the
@@ -110,6 +110,23 @@ signs in with the permissions above (or the token works) and the approver's
 GitHub account exists. A
 failed check says what to fix, never the secret, and asks again. Secrets are
 typed hidden and are written only to `config.json`, with mode 600.
+
+The Plane address question wants just the site, but a workspace address
+copied from the browser works too: for `https://app.plane.so/my-workspace/`
+or any deeper page in it, setup keeps `https://app.plane.so` as the address
+and offers `my-workspace` as the workspace slug. Once the Orchestrator's login
+works, setup asks who approves Cycle plans (needed only for sprint-pull). It
+lists, numbered, everyone in the workspace's projects with their display name
+and email, once each; it hides nobody, but labels DD's own login "(Dynamic
+Dispatch's login)" and, on a rerun, each configured agent, such as "(agent:
+Claude)". Type the approver's number and setup saves their Plane user ID as
+`plane.approver_user_id`. With no approver saved, Enter skips; with one
+saved, the prompt shows who it is, Enter keeps them and `none` removes them.
+The list uses only reads the Orchestrator is already allowed to make. If
+setup can see nobody (no projects yet) or can't read the members, it says so
+and asks for the Plane user ID instead, with the same Enter and `none`
+behaviour; the ID ends the address of the person's profile page in Plane,
+`https://PLANE/WORKSPACE/profile/USER_ID`.
 
 Setup writes `config.json` only once, when it finishes, so DD never sees a
 half-finished one. Until then it keeps your answers in
@@ -889,14 +906,26 @@ Check it before restarting as above.
 
 ## Agent logins
 
-Claude's login token lives in `/etc/dynamic-dispatch/claude.env`, owned by
-`root:dd-agent` with mode 640. The file has one line beginning
-`CLAUDE_CODE_OAUTH_TOKEN=` followed by the token, with no quotes and no
-`export`.
+Create a Claude subscription token as Claude's account, then save it from
+the checkout with the helper:
 
-Run this on another computer to create the Claude login token:
+    (cd /tmp && sudo -u dd-agent -H claude setup-token)
+    sudo python3 deploy/dd-claude-login
 
-    claude setup-token
+Use `--config /path/to/config.json` if the config is outside the checkout.
+The helper reads Claude's env file and group from config; without config or
+a Claude agent it announces `/etc/dynamic-dispatch/claude.env` and group
+`dd-agent` as defaults. Paste every line at the hidden prompt, then press
+Return on an empty line. Whitespace is removed and short subscription tokens
+need confirmation. API keys are also accepted; the helper chooses the login
+variable and atomically saves exactly one line, owned by root and Claude's
+group with mode 640.
+
+The helper asks: "Test the login now with one tiny request to Claude (60-second limit)? [y/N]"
+Accept to check the login as Claude's account. It prints `Claude replied OK`
+or an error type, never raw JSON or the token. If Claude rejects the login,
+it tells you to make a new token with `claude setup-token` and run the helper
+again.
 
 Codex's login lives in its own home at `/home/dd-codex/.codex/auth.json`,
 readable only by `dd-codex`. Run the following commands from `/tmp` because
