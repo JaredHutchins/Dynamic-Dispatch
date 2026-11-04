@@ -224,10 +224,12 @@ def _check_plane(cfg, check, require):
               'Cannot verify agent label; set agent_label_id to a label in this project and check access.',
               service='Plane', credential='Plane Orchestrator token', skip=dependency)
         # The push token warning goes in the Product Backlog, labelled Human so no agent builds it.
-        check(prefix + ' push token warning', lambda: require(project['states'].get('product_backlog')
+        check(prefix + ' push token warning', lambda: require((project['states'].get('product_backlog')
+                                                              or project.get('cycles', {}).get('product_backlog_state'))
                                                               and project.get('human_only_label_id')),
-              'states product_backlog and human_only_label_id are set, for the push token warning.',
-              "states product_backlog or human_only_label_id isn't set, so the push token warning can't go on "
+              'The Product Backlog column and human_only_label_id are set for the Dynamic Dispatch push token warning.',
+              "The Product Backlog column (states.product_backlog or cycles.product_backlog_state) or "
+              "human_only_label_id isn't set, so the Dynamic Dispatch push token warning can't go on "
               f'the board. {push_expiry.MISSING}.')
         for agent_index, name in enumerate(cfg['agents'], 1):
             if name not in config.project_agents(project):

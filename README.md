@@ -40,7 +40,7 @@ For Docker or Colima, follow [Run DD in a container](deploy/CONTAINER.md).
 - **A GitHub repository,** a GitHub App for DD (it opens pull requests and
   sets the status light), and a Git login on the machine that can push to the
   repository, saved and checked with `python3 main.py --save-push-login`.
-  DD warns before that token expires, with a Plane work item and phone alerts.
+  Dynamic Dispatch warns before that token expires, with a Plane work item and phone alerts.
   Failed checks retry during the same day. Replacing the token resolves its old
   warning; a replacement that is expiring soon or refused gets its own warning.
 - **At least one agent:** Claude Code, Codex or Gemini CLI, installed and

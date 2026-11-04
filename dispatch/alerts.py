@@ -135,7 +135,7 @@ class Health:
         conn = runs.connect(self.cfg['db_path'], initialize=False)
         try:
             push_expiry.check(self.cfg, conn, lambda message: send(self.cfg, None, None, message,
-                                                                    suffix='DD push token', level='active'), at)
+                                                                    suffix='Dynamic Dispatch push token', level='active'), at)
         finally:
             conn.close()
 

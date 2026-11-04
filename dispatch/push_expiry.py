@@ -20,11 +20,11 @@ REFUSED = "refused"
 MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 RENEWAL = (
     "To renew it:\n"
-    "1. On GitHub, open Settings > Developer settings > Personal access tokens, find the token DD pushes "
+    "1. On GitHub, open Settings > Developer settings > Personal access tokens, find the token Dynamic Dispatch pushes "
     "with and regenerate it, keeping its access to the repositories (Contents read and write).\n"
-    "2. On DD's host, as DD's account, run python3 main.py --save-push-login and paste the new token. "
+    "2. On Dynamic Dispatch's host, as Dynamic Dispatch's account, run python3 main.py --save-push-login and paste the new token. "
     "In a container, run it inside the container, as deploy/CONTAINER.md \"Renew the push token\" describes.\n\n"
-    "DD comments here and moves this item to Done when its next daily check finds the renewed token. "
+    "Dynamic Dispatch comments here and moves this item to Done when its next daily check finds the renewed token. "
     "It is labelled Human, so no agent picks it up."
 )
 MISSING = "Run --add-project for this project again to fix it"
@@ -52,17 +52,17 @@ def expiry(token):
 
 def title(found):
     if found == REFUSED:
-        return "The GitHub push token isn't working"
-    return f"Renew the GitHub push token (expires {day(found)})"
+        return "The GitHub push token for Dynamic Dispatch isn't working"
+    return f"Renew the GitHub push token for Dynamic Dispatch (expires {day(found)})"
 
 
 def description(found):
     if found == REFUSED:
-        problem = ("DD's daily check found that GitHub refuses the token Git pushes with for this project: "
-                   "it has expired or been revoked. Until it is renewed, DD can't push story branches.")
+        problem = ("Dynamic Dispatch's daily check found that GitHub refuses the token Git pushes with for this project: "
+                   "it has expired or been revoked. Until it is renewed, Dynamic Dispatch can't push story branches.")
     else:
-        problem = (f"DD's daily check found that the token Git pushes with for this project expires on "
-                   f"{day(found)}. After that, DD can't push story branches.")
+        problem = (f"Dynamic Dispatch's daily check found that the token Git pushes with for this project expires on "
+                   f"{day(found)}. After that, Dynamic Dispatch can't push story branches.")
     return f"{problem}\n\n{RENEWAL}"
 
 
@@ -120,7 +120,7 @@ def _alert(conn, fingerprint, found, at, alert):
     """Bark at 30, 7 and 1 days before expiry, and once for a refused token; one alert per token, not project."""
     if found == REFUSED:
         if runs.claim_push_token_notice(conn, "refused:" + fingerprint):
-            alert("GitHub refuses the Git push token, so DD can't push. Regenerate it on GitHub, "
+            alert("GitHub refuses the Git push token, so Dynamic Dispatch can't push. Regenerate it on GitHub, "
                   "then run python3 main.py --save-push-login.")
         return
     if found is None:
@@ -130,7 +130,7 @@ def _alert(conn, fingerprint, found, at, alert):
     claimed = [runs.claim_push_token_notice(conn, f"alert:{fingerprint}:{found.isoformat()}:{days}")
                for days in reached]
     if any(claimed):
-        alert(f"The Git push token expires on {day(found)} (within {min(reached)} days). Regenerate it on "
+        alert(f"The Git push token for Dynamic Dispatch expires on {day(found)} (within {min(reached)} days). Regenerate it on "
               "GitHub, then run python3 main.py --save-push-login.")
 
 
@@ -156,10 +156,12 @@ def _add_item(cfg, conn, name, fingerprint, found, alert):
     if runs.push_token_item(conn, name, fingerprint, key) is not None:
         return
     project = cfg["projects"][name]
-    backlog, human = project["states"].get("product_backlog"), project.get("human_only_label_id")
+    backlog = (project["states"].get("product_backlog")
+               or project.get("cycles", {}).get("product_backlog_state"))
+    human = project.get("human_only_label_id")
     if not backlog or not human:
         # Without the Human label an agent could pick the item up, so none is made.
-        detail = (f"Couldn't add \"{title(found)}\" to project {name}'s board: states product_backlog or "
+        detail = (f"Couldn't add \"{title(found)}\" to project {name}'s board: the Product Backlog column (states.product_backlog or cycles.product_backlog_state) or "
                   f"human_only_label_id isn't set. {MISSING}.")
         _warning(conn, name, detail)
         if runs.claim_push_token_notice(conn, f"missing:{name}:{fingerprint}:{key}"):

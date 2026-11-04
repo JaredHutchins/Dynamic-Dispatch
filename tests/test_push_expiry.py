@@ -92,7 +92,7 @@ class PushTokenWarning(unittest.TestCase):
             self.check(self.days_before(EXPIRY, days))  # the same day again, and after a restart
         self.orch.create_issue.assert_called_once()
         project, name, description, state = self.orch.create_issue.call_args.args
-        self.assertEqual((project, name, state), ('pid', 'Renew the GitHub push token (expires 5 Dec 2026)', 'backlog'))
+        self.assertEqual((project, name, state), ('pid', 'Renew the GitHub push token for Dynamic Dispatch (expires 5 Dec 2026)', 'backlog'))
         self.assertEqual(self.orch.create_issue.call_args.kwargs['labels'], ['human'])
         self.assertIn('regenerate it', description)
         self.assertIn('python3 main.py --save-push-login', description)
@@ -111,7 +111,7 @@ class PushTokenWarning(unittest.TestCase):
         self.replies[TOKEN] = push_expiry.REFUSED
         for days in range(3):
             self.check(EXPIRY + timedelta(days=days))
-        self.assertEqual(self.created_titles(), ["The GitHub push token isn't working"])
+        self.assertEqual(self.created_titles(), ["The GitHub push token for Dynamic Dispatch isn't working"])
         self.assertIn('python3 main.py --save-push-login', self.orch.create_issue.call_args.args[2])
         self.assertEqual(len(self.bark_messages()), 1)
         self.assertIn('refuses', self.bark_messages()[0])
@@ -246,6 +246,19 @@ class PushTokenWarning(unittest.TestCase):
                 self.check(self.days_before(EXPIRY, 20))
                 self.assertEqual(self.asked, [TOKEN])
 
+    def test_legacy_product_backlog_and_states_precedence(self):
+        project = self.cfg['projects']['dd']
+        project['cycles'] = {'product_backlog_state': 'legacy-backlog'}
+        self.check(self.days_before(EXPIRY, 14))
+        self.assertEqual(self.orch.create_issue.call_args.args[3], 'backlog')
+        self.conn.execute('DELETE FROM push_token_items')
+        self.conn.execute('DELETE FROM push_token_notices')
+        self.conn.commit()
+        del project['states']['product_backlog']
+        self.check(self.days_before(EXPIRY, 14))
+        self.assertEqual(self.orch.create_issue.call_args.args[3], 'legacy-backlog')
+        self.assertEqual(self.orch.create_issue.call_args.kwargs['labels'], ['human'])
+
     def test_no_item_without_the_backlog_state_or_human_label(self):
         self.cfg['alerts'] = {}
         for missing in ('product_backlog', 'human_only_label_id'):
@@ -265,6 +278,7 @@ class PushTokenWarning(unittest.TestCase):
                 self.orch.create_issue.assert_not_called()
                 warning = self.conn.execute("SELECT detail FROM events WHERE type = 'warning'").fetchall()[-1][0]
                 self.assertIn('Run --add-project for this project again to fix it', warning)
+                self.assertIn('states.product_backlog or cycles.product_backlog_state', warning)
                 self.assertIn('Run --add-project', self.stderr.getvalue())
                 self.assertTrue(any('Run --add-project' in m for m in self.bark_messages()))
 

@@ -432,6 +432,14 @@ class Doctor(unittest.TestCase):
         self.push_expiry.assert_called_once()
         self.assertIn('OK Git push login 2 expiry:', output)
 
+    def test_push_token_warning_legacy_backlog(self):
+        self.sprint_pull()
+        project = next(iter(self.cfg['projects'].values()))
+        del project['states']['product_backlog']
+        code, output = self.run_doctor()
+        self.assertEqual(code, 0)
+        self.assertIn('OK Plane project 1 push token warning:', output)
+
     def test_push_token_warning_settings(self):
         project = next(iter(self.cfg['projects'].values()))
         self.assertIn('OK Plane project 1 push token warning:', self.run_doctor()[1])
@@ -447,6 +455,7 @@ class Doctor(unittest.TestCase):
                 project.update(saved[0], states=saved[1])
                 self.assertEqual(code, 1)
                 self.assertIn('FAIL Plane project 1 push token warning:', output)
+                self.assertIn('states.product_backlog or cycles.product_backlog_state', output)
                 self.assertIn('Run --add-project for this project again to fix it.', output)
 
     def test_agent_checks(self):

@@ -510,16 +510,17 @@ access to that repository), `couldn't reach GitHub (not a token problem)`, or
 config holds the same token, update it there too. No restart is needed: Git
 reads the saved login on each push.
 
-DD warns before this token expires, with an App or without one. About once a
+Dynamic Dispatch warns before this token expires, with an App or without one. About once a
 day it asks GitHub when the token Git pushes with expires. Within 14 days of
 expiry, or once GitHub refuses the token, it adds a work item labelled Human to
-each project's Product Backlog, such as "Renew the GitHub push token (expires
+each project's Product Backlog, such as "Renew the GitHub push token for Dynamic Dispatch (expires
 5 Dec 2026)", with these steps. With Bark set up it also sends alerts with
 sound at 30, 7 and 1 days before expiry, and once for a refused token; without
 Bark the work item is the only warning. After you renew, the next daily check
 comments on the item and moves it to Done if `states.done` is set. `--doctor`
 shows each push token's expiry, and fails for a project missing
-`states.product_backlog` or `human_only_label_id`: run `--add-project` for it
+both `states.product_backlog` and `cycles.product_backlog_state`, or missing
+`human_only_label_id`: run `--add-project` for it
 again to fix that. Failed or interrupted checks retry on the next hourly
 monitor pass, including on the same day, without repeating recorded items or
 Bark alerts. Replacing the token resolves its previous warning even when the
