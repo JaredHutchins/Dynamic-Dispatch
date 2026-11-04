@@ -133,26 +133,28 @@ def _starting_states(client, project_id, states, created):
             conflict = True
         if sources and not targets:
             if len(sources) != 1 or sources[0].get('group') != group:
-                raise SetupError('A Plane starting column is ambiguous or in the wrong state group; check it in Plane.')
+                continue
             renames.append((sources[0], new))
     if not unused:
         return created
     approved = created
     if renames and not conflict and not created:
-        answer = input("This project has Plane's Backlog and Todo states. Rename them to Product Backlog "
-                       "and Sprint Backlog, and make Product Backlog the default? [Y/n]").strip().lower()
-        if answer not in ('', 'y', 'yes', 'n', 'no'):
-            raise SetupError('Answer yes or no for renaming Plane states.')
-        approved = answer in ('', 'y', 'yes')
-    if conflict or not approved:
-        for name in unused:
-            print(redact.scrub(f'DD will not use {name}. To remove it in Plane, make another state the default '
-                               'first, move any work items out, then delete it.'))
-        return
-    for state, name in renames:
-        client.patch(f"/projects/{project_id}/states/{state['id']}/", {'name': name})
-        state['name'] = name
-    return True
+        while True:
+            answer = input("This project has Plane's Backlog and Todo states. Rename them to Product Backlog "
+                           "and Sprint Backlog, and make Product Backlog the default? [Y/n] ").strip().lower()
+            if answer in ('', 'y', 'yes', 'n', 'no'):
+                approved = answer in ('', 'y', 'yes')
+                break
+            print('Answer yes or no for renaming Plane states.')
+    if not conflict and approved:
+        for state, name in renames:
+            unused.remove(state['name'])
+            client.patch(f"/projects/{project_id}/states/{state['id']}/", {'name': name})
+            state['name'] = name
+    for name in unused:
+        print(redact.scrub(f'Dynamic Dispatch will not use {name}. To remove it in Plane, make another state '
+                           'the default first, move any work items out, then delete it.'))
+    return approved and not conflict
 
 
 def _default_state(client, project_id, state_id):

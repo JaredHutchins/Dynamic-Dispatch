@@ -161,14 +161,16 @@ Enter the project name, GitHub repository, test command and whether to use
 sprint-pull Cycles (which needs the approver's Plane user ID). DD creates the
 Plane project, seven DD columns and three labels, and adds the identities.
 On a new board, Plane's Backlog and Todo become Product Backlog and Sprint
-Backlog with the same IDs, and Product Backlog becomes the default. Only missing
-DD columns are created. For an existing project, approve reuse when asked, then
-choose whether to rename those starting states and change the default. Enter
-accepts; no preserves their names and the default and lists unused columns.
-Work items stay in their states. If either old and new name both exist, no names
-or defaults change. Setup lists unused states: to remove one in Plane, make
-another state the default first, move its work items out, then delete it.
-DD never deletes states. If Plane refuses the default change, setup finishes
+Backlog with the same IDs, and Product Backlog becomes the default. Only
+missing Dynamic Dispatch columns are created. For an existing project, approve
+reuse when asked, then choose whether to rename those starting states and
+change the default. Enter accepts; no preserves their names and the default
+and lists unused columns. Work items stay in their states. If either old and
+new name both exist, no names or defaults change. A starting state that is
+duplicated or in an unexpected state group is left as it is and listed as
+unused. Setup lists unused states: to remove one in Plane, make another state
+the default first, move its work items out, then delete it. Dynamic Dispatch
+never deletes states. If Plane refuses the default change, setup finishes
 and tells you to open Product Backlog's state menu and choose **Mark as default**.
 Matching resources are reused and rerunning completed setup changes nothing. See
 [Add a project](README.md#add-a-project) for repository and membership checks.

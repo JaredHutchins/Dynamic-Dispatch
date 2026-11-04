@@ -240,15 +240,16 @@ login and approver, then offers to add the first project. Setup writes
 half-finished one. If it stops part-way, your answers so far are kept in a
 private progress file beside it; rerunning the same command is safe and offers
 them as the current values. Accept, and supply
-its repository, name and test command. It sets up seven DD columns and three
-labels and clones the repository. On new Plane boards, Backlog and Todo are
-renamed to Product Backlog and Sprint Backlog, keeping their IDs, and Product
-Backlog becomes the default. Existing projects ask first; declining preserves
-names and the default. If old and new names coexist, neither names nor defaults
-change. Setup lists unused states and how to remove them manually; DD never
-deletes states or moves their work items. If the API refuses the default change,
-use Product Backlog's state menu, **Mark as default**. Completed setup can be
-rerun without changes, on both CE and Cloud. See [Add a project](README.md#add-a-project).
+its repository, name and test command. It sets up seven Dynamic Dispatch
+columns and three labels and clones the repository. On new Plane boards,
+Backlog and Todo are renamed to Product Backlog and Sprint Backlog, keeping
+their IDs, and Product Backlog becomes the default. Existing projects ask
+first; declining preserves names and the default. If old and new names
+coexist, neither names nor defaults change. Setup lists unused states and how
+to remove them manually; Dynamic Dispatch never deletes states or moves their
+work items. If the API refuses the default change, use Product Backlog's state
+menu, **Mark as default**. Completed setup can be rerun without changes, on
+both CE and Cloud. See [Add a project](README.md#add-a-project).
 Leave the default roots at
 `/srv/dynamic-dispatch/repos` and `/srv/dynamic-dispatch/worktrees`.
 Agent logins can wait until step 6. Missing agent env files are listed after

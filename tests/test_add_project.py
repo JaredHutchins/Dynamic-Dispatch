@@ -250,7 +250,7 @@ class SetupTests(unittest.TestCase):
                 original = [dict(s) for s in self.service.columns]
                 result, text = self.run_setup(reuse=True, rename=answer)
                 self.assertEqual(result, 0, text)
-                self.assertIn('make Product Backlog the default? [Y/n]', self.asked)
+                self.assertIn('make Product Backlog the default? [Y/n] ', self.asked)
                 self.assertEqual(self.service.items, [{'state': 'initial-0'}, {'state': 'initial-1'}])
                 if answer == 'yes':
                     self.assertEqual(len(self.service.columns), 7)
@@ -260,8 +260,39 @@ class SetupTests(unittest.TestCase):
                 else:
                     self.assertEqual(self.service.columns[:5], original)
                     self.assertEqual(len(self.service.columns), 9)
-                    self.assertIn('DD will not use Backlog', text)
-                    self.assertIn('DD will not use Todo', text)
+                    self.assertIn('Dynamic Dispatch will not use Backlog', text)
+                    self.assertIn('Dynamic Dispatch will not use Todo', text)
+
+    def test_odd_starting_states_are_unused_and_setup_finishes(self):
+        for odd in ('duplicate', 'wrong_group'):
+            with self.subTest(odd=odd):
+                self.path.write_text(json.dumps(self.cfg))
+                self.service = FakePlane()
+                self.mocks['plane.Plane'].return_value = self.service
+                self.service.project_list.append({'id': 'existing', 'name': 'Example', 'identifier': 'EX'})
+                self.service.starting_states()
+                if odd == 'duplicate':
+                    self.service.columns.append(dict(self.service.columns[1], id='extra-todo'))
+                else:
+                    self.service.columns[1]['group'] = 'started'
+                todos = [dict(s) for s in self.service.columns if s['name'] == 'Todo']
+                result, text = self.run_setup(reuse=True, rename='yes')
+                self.assertEqual(result, 0, text)
+                self.assertEqual([s for s in self.service.columns if s['name'] == 'Todo'], todos)
+                self.assertEqual(self.service.columns[0]['name'], 'Product Backlog')
+                self.assertIn('Dynamic Dispatch will not use Todo', text)
+                self.assertIn('make another state the default first, move any work items out, then delete it', text)
+                self.assertIn('sprint_backlog', config.load(self.path)['projects']['Example']['states'])
+
+    def test_unclear_rename_answer_asks_again(self):
+        self.service.project_list.append({'id': 'existing', 'name': 'Example', 'identifier': 'EX'})
+        self.service.starting_states()
+        result, text = self.run_setup(reuse=True, rename='perhaps', prepare=('yes',))
+        self.assertEqual(result, 0, text)
+        self.assertEqual(self.asked.count('make Product Backlog the default? [Y/n] '), 2)
+        self.assertEqual(self.service.columns[0]['name'], 'Product Backlog')
+        self.assertTrue(self.service.columns[0]['default'])
+        self.assertEqual(self.service.columns[1]['name'], 'Sprint Backlog')
 
     def test_both_exist_prevents_all_renames_and_default_changes(self):
         for name, group in [('Product Backlog', 'backlog'), ('Sprint Backlog', 'unstarted')]:
