@@ -7,6 +7,7 @@ from pathlib import Path
 import stat
 import subprocess
 import tempfile
+import termios
 import unittest
 from unittest import mock
 
@@ -29,7 +30,7 @@ class PushLoginCase(unittest.TestCase):
         self.config = self.home / 'config.json'
         self.prompts = []
 
-    def run_command(self, answers, token=TOKEN, path=None):
+    def run_command(self, answers, token=TOKEN, path=None, secret=None):
         answers = iter(answers)
 
         def ask(prompt):
@@ -41,7 +42,7 @@ class PushLoginCase(unittest.TestCase):
 
         out = io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
-            code = push_login.run(str(path or self.config), ask=ask, secret=lambda prompt: token)
+            code = push_login.run(str(path or self.config), ask=ask, secret=secret or (lambda prompt: token))
         output = out.getvalue()
         self.assertNotIn('fake' + 'x' * 10, output)
         self.assertNotIn('github_pat', output)
@@ -118,6 +119,77 @@ class SavingTheLogin(PushLoginCase):
         code, output = self.run_command([])
         self.assertEqual(code, 1)
         self.assertIn('No answer was given', output)
+
+
+class PastingTheToken(PushLoginCase):
+    """The hidden token prompt, read from a real pseudo-terminal one line at a time."""
+
+    def setUp(self):
+        super().setUp()
+        self.keyboard, self.terminal = os.openpty()
+        self.addCleanup(os.close, self.keyboard)
+        self.addCleanup(os.close, self.terminal)
+        self.enterContext(mock.patch.object(push_login, 'TERMINAL', os.ttyname(self.terminal)))
+        self.original = termios.tcgetattr(self.terminal)
+        self.assertTrue(self.original[3] & termios.ECHO)
+
+    def paste(self, typed):
+        """Run the command, typing each of `typed` only once echo is off, and return what echoed back."""
+        typed, set_terminal = list(typed), termios.tcsetattr
+
+        def set_and_type(fd, when, settings):
+            set_terminal(fd, when, settings)
+            if not settings[3] & termios.ECHO and typed:
+                os.write(self.keyboard, typed.pop(0).encode())
+
+        with mock.patch.object(termios, 'tcsetattr', side_effect=set_and_type):
+            code, output = self.run_command(['newuser'], secret=push_login.read_hidden)
+        self.assertEqual(termios.tcgetattr(self.terminal), self.original)
+        os.set_blocking(self.keyboard, False)
+        try:
+            echoed = os.read(self.keyboard, 65536)
+        except BlockingIOError:
+            echoed = b''
+        return code, output, echoed
+
+    def test_one_line_and_separate_lines_save_the_same_login(self):
+        for lines in ([TOKEN, ''], [TOKEN[:40], TOKEN[40:], ''], [' \t' + TOKEN[:40], TOKEN[40:] + ' \t', '']):
+            with self.subTest(lines=len(lines)):
+                code, output, echoed = self.paste(['\n'.join(lines) + '\n'])
+                self.assertEqual(code, 0)
+                self.assertEqual(self.saved(), [f'https://newuser:{TOKEN}@github.com'])
+                self.assertIn('press Return on an empty line', output)
+                self.assertNotIn(TOKEN[:20].encode(), echoed)
+
+    def test_cancelling_restores_echo_and_saves_nothing(self):
+        code, output, _ = self.paste(['\x04'])  # Ctrl-D at the start of a line
+        self.assertEqual(code, 1)
+        self.assertIn('No answer was given', output)
+        self.assertFalse(self.credentials.exists())
+
+    def test_interrupting_restores_echo_and_saves_nothing(self):
+        hidden = []
+
+        def interrupt():
+            hidden.append(not termios.tcgetattr(self.terminal)[3] & termios.ECHO)
+            raise KeyboardInterrupt
+
+        terminal = mock.mock_open()
+        terminal.return_value.fileno.return_value = self.terminal
+        terminal.return_value.readline.side_effect = interrupt
+        with mock.patch('dispatch.push_login.open', terminal, create=True):
+            code, output, _ = self.paste([])
+        self.assertEqual(hidden, [True])
+        self.assertEqual(code, 1)
+        self.assertIn('Stopped', output)
+        self.assertFalse(self.credentials.exists())
+
+    def test_no_terminal_saves_nothing(self):
+        with mock.patch.object(push_login, 'TERMINAL', str(self.home / 'no-terminal')):
+            code, output = self.run_command(['newuser'], secret=push_login.read_hidden)
+        self.assertEqual(code, 1)
+        self.assertIn('only be pasted in a terminal', output)
+        self.assertFalse(self.credentials.exists())
 
 
 class CheckingProjects(PushLoginCase):

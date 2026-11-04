@@ -215,7 +215,8 @@ dc run --rm -T --user dd --entrypoint /bin/sh dd -c \
 Back in the container shell, save the Git push login. Use a fine-grained
 token with repository Contents: read and write permission on each project.
 The command asks for your GitHub username and then the token, which is hidden
-as you paste it and never printed. It saves the login in Git's credential
+as you paste it and never printed. Paste the whole token, even if it spans
+lines, then press Return on an empty line. It saves the login in Git's credential
 store on DD's home volume (`/home/dd/.git-credentials`, mode 600), offers to
 remove any other saved GitHub login so Git uses the new one, and checks each
 project with a push dry run. Before setup there are no projects yet, so it
@@ -495,7 +496,8 @@ may have changed since the process started.
 
 Regenerate the token on GitHub (Settings, Developer settings, Personal access
 tokens), with the same repository Contents: read and write permission. Then,
-from the host, run the command as DD's account and paste the new token:
+from the host, run the command as DD's account, paste the new token and
+press Return on an empty line:
 
 ```sh
 dc exec --user dd dd python3 main.py --save-push-login --config /home/dd/config/config.json

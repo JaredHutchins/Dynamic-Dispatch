@@ -1,12 +1,12 @@
 """Saving the GitHub login Git pushes with, and proving it can push to each project.
 
-The token is typed hidden and goes to Git's credential store on Git's input;
+The token is pasted hidden and goes to Git's credential store on Git's input;
 it is never printed or logged. Works without config.json, so it can run before
 guided setup.
 """
 
-import getpass
 import re
+import termios
 from pathlib import Path
 
 from . import config, gitops
@@ -23,6 +23,36 @@ RESULTS = {
 REJECTED = (gitops.PUSH_INVALID, gitops.PUSH_NO_WRITE, gitops.PUSH_FAILED)
 # GitHub usernames are letters, digits and hyphens; anything else is a typing slip.
 USERNAME = re.compile(r"[A-Za-z0-9-]+")
+TERMINAL = "/dev/tty"
+TOKEN_PROMPT = "GitHub push token (hidden; paste it, then press Return on an empty line): "
+
+
+def read_hidden(prompt):
+    """Lines typed at the terminal up to an empty one, joined, with echo off throughout.
+
+    getpass would stop at the first line, cutting a token pasted with a line
+    break in it. Echo stays off for the whole paste, because changing terminal
+    settings between lines can drop lines already queued.
+    """
+    print(prompt, end="", flush=True)
+    lines = []
+    with open(TERMINAL, "r") as terminal:
+        original = termios.tcgetattr(terminal.fileno())
+        hidden = list(original)
+        hidden[3] &= ~(termios.ECHO | termios.ECHONL)
+        try:
+            termios.tcsetattr(terminal.fileno(), termios.TCSANOW, hidden)
+            while True:
+                line = terminal.readline()
+                if not line:
+                    raise EOFError
+                if not line.strip():
+                    break
+                lines.append(line)
+        finally:
+            termios.tcsetattr(terminal.fileno(), termios.TCSANOW, original)
+            print()
+    return "".join(lines)
 
 
 def check(repo):
@@ -66,14 +96,18 @@ def _yes(answer):
     return answer.strip().lower() in ("", "y", "yes")
 
 
-def run(path=None, *, ask=input, secret=getpass.getpass):
+def run(path=None, *, ask=input, secret=read_hidden):
     try:
         username = ask("GitHub username: ").strip()
         if not USERNAME.fullmatch(username):
             print("A GitHub username is letters, digits and hyphens; nothing was saved.")
             return 1
         # A pasted token can bring spaces or line breaks with it; a token never has them.
-        token = "".join(secret("GitHub push token (hidden): ").split())
+        try:
+            token = "".join(secret(TOKEN_PROMPT).split())
+        except (OSError, termios.error):
+            print("The token can only be pasted in a terminal, so it stays hidden; nothing was saved.")
+            return 1
         if not token:
             print("No token was given; nothing was saved.")
             return 1
@@ -94,5 +128,8 @@ def run(path=None, *, ask=input, secret=getpass.getpass):
                     print(f"Removed the saved login for {other}.")
     except EOFError:
         print("\nNo answer was given; run the command again in a terminal.")
+        return 1
+    except KeyboardInterrupt:
+        print("\nStopped; the project check didn't run.")
         return 1
     return _check_projects(path)

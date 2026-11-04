@@ -92,8 +92,9 @@ DD's account from the checkout, without sudo:
 
 Use a fine-grained token with repository Contents: read and write permission
 on each project. The command asks for your GitHub username and then the
-token, which is hidden as you paste it and never printed; spaces and line
-breaks pasted with it are removed. It saves the login in Git's credential
+token, which is hidden as you paste it and never printed. Paste the whole
+token, even if it spans lines, then press Return on an empty line; spaces and
+line breaks pasted with it are removed. It saves the login in Git's credential
 store for github.com, in `~/.git-credentials` with mode 600, replacing a
 saved login for the same username. If other GitHub logins are saved, it
 names each and asks whether to remove it, so Git uses the new one. It then
@@ -1085,7 +1086,8 @@ gives no reset time, so the cool-down lasts `usage_limit_cooldown_minutes`.
 
 Regenerate the token on GitHub (Settings, Developer settings, Personal access
 tokens), with the same repository Contents: read and write permission. Then,
-as DD's account from the checkout, run the command and paste the new token:
+as DD's account from the checkout, run the command, paste the new token and
+press Return on an empty line:
 
     python3 main.py --save-push-login
 
