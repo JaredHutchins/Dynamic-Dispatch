@@ -28,8 +28,8 @@ or Docker socket mount is needed.
   Plane account) and for each agent you include. Follow
   [Set up Plane Cloud](PLANE_CLOUD.md) to create and install the apps, or
   prepare each identity's personal token. Note the workspace slug,
-  credentials and approver's GitHub username. For Cycles, also obtain the
-  approver's Plane user ID as described there. Use this guide's container
+  credentials and approver's GitHub username; setup finds the approver's
+  Plane account for Cycles by name. Use this guide's container
   commands instead of that page's host installer and systemd commands. Its
   install-link helper can run in the container shell opened in step 5.
 - For each agent you include, a way for it to log in:

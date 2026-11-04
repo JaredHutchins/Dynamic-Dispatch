@@ -109,24 +109,30 @@ An installed app is a member of the workspace's existing projects straight away.
 
 ## 4. Run guided setup
 
-For sprint-pull, first find the approver's Plane user ID: using that person's
-personal token, send `GET https://api.plane.so/api/v1/users/me/` with headers
-`X-API-Key` set to their token and `User-Agent` set to `dynamic-dispatch/1`.
-Copy the `id` from the JSON response and enter it when setup asks for the
-approver's Plane user ID. This is the same lookup DD uses in
-[`Plane.current_user()`](../dispatch/plane.py); use the approver's token,
-not an app's credentials, so you get the person's ID.
-
 ```sh
 python3 main.py --setup
 ```
 
-Enter the web address, accept the separate Cloud API address and enter the
-workspace slug. Choose a Plane app for the Orchestrator, then enter its Client
-ID, hidden Client Secret and app installation ID. Setup checks that it signs
-in and reaches the workspace. If it fails, check the credentials, installation
-and permissions, then answer again; [Troubleshooting](#7-troubleshooting)
-explains a refused sign-in.
+For the Plane address, enter `https://app.plane.so`. Pasting your workspace's
+address from the browser, such as `https://app.plane.so/my-workspace/`, works
+too: setup keeps the site and offers `my-workspace` as the workspace slug.
+Accept the separate Cloud API address and the workspace slug. Choose a Plane
+app for the Orchestrator, then enter its Client ID, hidden Client Secret and
+app installation ID. Setup checks that it signs in and reaches the workspace.
+If it fails, check the credentials, installation and permissions, then answer
+again; [Troubleshooting](#7-troubleshooting) explains a refused sign-in.
+
+Setup then asks who approves Cycle plans, which only sprint-pull needs. It
+lists everyone in the workspace's projects by number, display name and email,
+labelling Dynamic Dispatch's own login (and, on a rerun, each agent) rather
+than hiding it. The installed app is already a member of the existing
+projects, so no extra permission is needed. Type the approver's number, or
+press Enter to skip; on a rerun the prompt names the saved approver, Enter
+keeps them and `none` removes them. If the workspace has no projects yet,
+setup asks for the approver's Plane user ID instead: it ends the address of
+their profile page, `https://app.plane.so/my-workspace/profile/USER_ID`, and
+Enter skips it; you can rerun setup after adding a project to pick from the
+list.
 
 Complete the GitHub questions and select the agents installed on your host.
 For each agent, choose its own app and enter its three values. Setup checks
