@@ -106,12 +106,14 @@ class Health:
 
     def check_expiry(self, at=None):
         at = at or datetime.now(timezone.utc)
+        github_cfg = self.cfg.get('github', {})
+        # An App's installation tokens renew themselves, and without github.token there is nothing to check.
+        if github.uses_app(github_cfg) or not github_cfg.get('token'):
+            return
         if not self.mark('expiry-check:' + at.date().isoformat()):
             return
         try:
-            token = self.cfg.get('github', {}).get('token')
-            if not token:
-                raise ValueError('No token')
+            token = github_cfg['token']
             expiry = github.token_expiry(token)
             remaining = (expiry - at).total_seconds() / 86400
             for days in (30, 7, 1):

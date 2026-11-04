@@ -38,6 +38,22 @@ PACKAGES = {'groupadd': 'passwd', 'useradd': 'passwd', 'usermod': 'passwd', 'vis
 ACCOUNT = pwd.getpwuid(os.getuid())
 
 
+def bounded_sleep(limit=10):
+    """A time.sleep stand-in for supervise, failing fast if it never stops waiting.
+
+    A mocked sleep returns at once, so a wait for a config that never comes would
+    spin and record calls until memory runs out.
+    """
+    naps = 0
+
+    def sleep(seconds):
+        nonlocal naps
+        naps += 1
+        if naps > limit:
+            raise AssertionError('supervise kept waiting')
+    return sleep
+
+
 def patch(test, name, value):
     patcher = mock.patch.object(start, name, value)
     patcher.start()
@@ -246,6 +262,9 @@ class RealRollback(Base):
         good = git('rev-parse', 'HEAD', cwd=checkout).strip()
         patch(self, 'CHECKOUT', checkout)
         patch(self, 'CONFIG', self.tmp / 'config')
+        # Setup is finished, so supervise starts DD at once instead of waiting for it.
+        (self.tmp / 'config').mkdir(exist_ok=True)
+        (self.tmp / 'config' / 'config.json').write_text('{}')
         patch(self, 'PYTHON', sys.executable)
         patch(self, 'ROLLBACK', str(ROOT / 'deploy' / 'dd-rollback'))
         with mock.patch.object(selfupdate.time, 'monotonic', return_value=0):
@@ -266,7 +285,8 @@ class RealRollback(Base):
             with self.subTest(crash=crash):
                 self.assertEqual(start.decision(), 0)
             with mock.patch.object(start.subprocess, 'Popen') as popen, \
-                    mock.patch.object(start.signal, 'signal'), mock.patch.object(start.time, 'sleep'), \
+                    mock.patch.object(start.signal, 'signal'), \
+                    mock.patch.object(start.time, 'sleep', side_effect=bounded_sleep()), \
                     mock.patch.object(start.time, 'time', return_value=now + 60 * crash):
                 popen.return_value.__enter__.return_value.wait.return_value = 1
                 start.supervise()
@@ -336,11 +356,16 @@ class RealRollback(Base):
         self.assertEqual(runs.rollback_state(checkout)['failed'], update)
 
 class Supervise(Folders):
+    def setUp(self):
+        super().setUp()
+        self.config = self.home / 'config' / 'config.json'
+        self.config.write_text('{}')
+
     def test_counts_crashes_but_not_updates_or_clean_exits(self):
         for code in (1, start.UPDATE_EXIT, 0):
             with self.subTest(code=code), mock.patch.object(start.subprocess, 'Popen') as popen, \
                     mock.patch.object(start.signal, 'signal'), \
-                    mock.patch.object(start.time, 'sleep') as sleep, \
+                    mock.patch.object(start.time, 'sleep', side_effect=bounded_sleep()) as sleep, \
                     mock.patch.object(start.time, 'time', return_value=1000):
                 start.save_failures([])
                 popen.return_value.__enter__.return_value.wait.return_value = code
@@ -354,13 +379,83 @@ class Supervise(Folders):
         handlers = {}
         with mock.patch.object(start.subprocess, 'Popen') as popen, \
                 mock.patch.object(start.signal, 'signal', side_effect=lambda sig, fn: handlers.update({sig: fn})), \
-                mock.patch.object(start.time, 'sleep') as sleep:
+                mock.patch.object(start.time, 'sleep', side_effect=bounded_sleep()) as sleep:
             child = popen.return_value.__enter__.return_value
             child.wait.side_effect = lambda: (handlers[start.signal.SIGTERM](start.signal.SIGTERM, None), -15)[1]
             self.assertEqual(start.supervise(), -15)
         child.send_signal.assert_called_once_with(start.signal.SIGTERM)
         sleep.assert_not_called()
         self.assertEqual(start.recent_failures(1000), [])
+
+
+class WaitForSetup(Folders):
+    def setUp(self):
+        super().setUp()
+        self.config = self.home / 'config' / 'config.json'
+
+    def supervise(self, appear_after, popen=None, stop_after=None):
+        """Supervise with config.json written after appear_after one-second naps."""
+        naps = []
+        handlers = {}
+
+        def sleep(seconds):
+            naps.append(seconds)
+            # A never-ending wait would otherwise grow naps until memory runs out.
+            if len(naps) > 10 * start.SETUP_POLL:
+                raise AssertionError('supervise kept waiting for setup')
+            if seconds == 1 and len(naps) == appear_after:
+                self.config.write_text('{}')
+            if len(naps) == stop_after:
+                handlers[start.signal.SIGTERM](start.signal.SIGTERM, None)
+
+        output = io.StringIO()
+        if popen is None:
+            popen = mock.MagicMock()
+            popen.return_value.__enter__.return_value.wait.return_value = 0
+        with mock.patch.object(start.subprocess, 'Popen', popen) as started, \
+                mock.patch.object(start.signal, 'signal', side_effect=lambda sig, fn: handlers.update({sig: fn})), \
+                mock.patch.object(start.time, 'sleep', side_effect=sleep), \
+                mock.patch('sys.stdout', output):
+            code = start.supervise()
+        return code, naps, output.getvalue(), started
+
+    def test_a_missing_config_waits_quietly_then_starts_once_it_appears(self):
+        code, naps, output, started = self.supervise(appear_after=2 * start.SETUP_POLL + 5)
+        self.assertEqual(code, 0)
+        # Checked once a minute, so it starts at the next check after the config appears.
+        self.assertEqual(naps, [1] * (3 * start.SETUP_POLL) + [start.RESTART_DELAY])
+        self.assertEqual(output, f'Waiting for setup: no config at {self.config}. '
+                                 'Run guided setup (deploy/CONTAINER.md, step 5).\n')
+        started.assert_called_once()
+        self.assertFalse((self.checkout / '.dd-recovery' / 'container-failures.json').exists())
+
+    def test_a_progress_file_alone_still_waits(self):
+        (self.home / 'config' / 'config.json.setup-progress').write_text('{"plane": {}}')
+        code, naps, output, started = self.supervise(appear_after=start.SETUP_POLL)
+        self.assertIn('Waiting for setup', output)
+        self.assertEqual(naps[:start.SETUP_POLL], [1] * start.SETUP_POLL)
+        started.assert_called_once()
+
+    def test_a_stop_while_waiting_starts_nothing_and_is_not_a_failure(self):
+        code, naps, output, started = self.supervise(appear_after=None, stop_after=3)
+        self.assertEqual((code, naps), (0, [1, 1, 1]))
+        started.assert_not_called()
+        self.assertEqual(start.recent_failures(1000), [])
+
+    def test_a_config_that_fails_to_load_still_counts(self):
+        self.config.write_text('not json')
+        self.config.chmod(0o600)
+        popen = subprocess.Popen
+
+        def real_dd(args, **kwargs):
+            # The real main.py, run from this repository so no failure lands in it.
+            return popen(args, cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        with mock.patch.object(start.time, 'time', return_value=1000):
+            code, naps, output, started = self.supervise(appear_after=None, popen=real_dd)
+        self.assertEqual(code, 1)
+        self.assertEqual(output, '')
+        self.assertEqual(start.recent_failures(1000), [1000])
 
 
 class Credential(Folders):

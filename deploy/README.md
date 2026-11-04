@@ -924,14 +924,26 @@ Check it before restarting as above.
 
 ## Agent logins
 
-Claude's login token lives in `/etc/dynamic-dispatch/claude.env`, owned by
-`root:dd-agent` with mode 640. The file has one line beginning
-`CLAUDE_CODE_OAUTH_TOKEN=` followed by the token, with no quotes and no
-`export`.
+Create a Claude subscription token as Claude's account, then save it from
+the checkout with the helper:
 
-Run this on another computer to create the Claude login token:
+    (cd /tmp && sudo -u dd-agent -H claude setup-token)
+    sudo python3 deploy/dd-claude-login
 
-    claude setup-token
+Use `--config /path/to/config.json` if the config is outside the checkout.
+The helper reads Claude's env file and group from config; without config or
+a Claude agent it announces `/etc/dynamic-dispatch/claude.env` and group
+`dd-agent` as defaults. Paste every line at the hidden prompt, then press
+Return on an empty line. Whitespace is removed and short subscription tokens
+need confirmation. API keys are also accepted; the helper chooses the login
+variable and atomically saves exactly one line, owned by root and Claude's
+group with mode 640.
+
+The helper asks: "Test the login now with one tiny request to Claude (60-second limit)? [y/N]"
+Accept to check the login as Claude's account. It prints `Claude replied OK`
+or an error type, never raw JSON or the token. If Claude rejects the login,
+it tells you to make a new token with `claude setup-token` and run the helper
+again.
 
 Codex's login lives in its own home at `/home/dd-codex/.codex/auth.json`,
 readable only by `dd-codex`. Run the following commands from `/tmp` because
@@ -1205,11 +1217,13 @@ without copying credentials or error output. They work even when Plane is
 unavailable. Each login alerts once until it succeeds and fails again; this
 state survives DD restarts. Git push uses the shared host login described above.
 
-DD checks `github.token` once per UTC day in the background, even when PRs use
-a GitHub App. GitHub's expiry header triggers one alert at each of 30, 7 and 1
-days remaining. If DD first sees a token already inside several thresholds,
-it sends each crossed threshold once. A missing token, unreadable expiry or
-network failure records at most one daily system warning event (no story).
+When PRs use `github.token` rather than a GitHub App, DD checks its expiry
+once per UTC day in the background. GitHub's expiry header triggers one alert
+at each of 30, 7 and 1 days remaining. If DD first sees a token already inside
+several thresholds, it sends each crossed threshold once. An unreadable expiry
+or network failure records at most one daily system warning event (no story).
+With a GitHub App, or no `github.token`, DD skips this check and logs nothing
+about it; App installation tokens renew themselves.
 These checks never hold up stories. Claude and Plane expiry are not checked.
 
 Keep phone sounds enabled for Bark's active notifications. Without configured
