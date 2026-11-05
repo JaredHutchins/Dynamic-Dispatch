@@ -5,7 +5,7 @@ mix of DD's agents: Claude Code, Codex and Gemini. The supplied image
 supports ARM64 and Intel/AMD64 and installs Python, Git, sudo and, for each
 agent you choose when building it, that agent's tool at a pinned version:
 Claude Code 2.1.283, Codex 0.158.0 and Gemini CLI 0.59.0. Without a choice it
-includes Gemini only, as earlier images did. DD runs as `dd`; Claude Code runs
+includes Claude Code and Codex. DD runs as `dd`; Claude Code runs
 as `dd-agent`, Codex as `dd-codex` and Gemini as `dd-gemini`, each with its own
 group, sudo rule and home volume, as on a Linux host. No privileged container
 or Docker socket mount is needed.

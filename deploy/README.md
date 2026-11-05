@@ -1412,7 +1412,7 @@ The doctor also checks the rest of the host:
 `deploy/Dockerfile` and `deploy/compose.yaml` run DD in one Debian container,
 on a Mac or any machine with Docker, with the same accounts and sudo rule as a
 Linux host. The `DD_AGENTS` build setting chooses its agents, any of `claude`,
-`codex` and `gemini` separated by spaces (Gemini alone by default). The image
+`codex` and `gemini` separated by spaces (Claude Code and Codex by default). The image
 has Python, Git, sudo and each chosen agent's tool at a pinned version, is set
 up with `dd-install --container --agents` for exactly those agents, and sets
 `DD_CONTAINER=1`. It needs no privileged mode and no Docker socket.

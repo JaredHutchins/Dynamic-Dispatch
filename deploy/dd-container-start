@@ -23,8 +23,8 @@ import time
 DD_USER = 'dd'
 # Each agent the image can include and its account, as deploy/dd-install names them.
 AGENT_ACCOUNTS = {'claude': 'dd-agent', 'codex': 'dd-codex', 'gemini': 'dd-gemini'}
-# deploy/Dockerfile's build setting. An image built before it existed included only Gemini.
-AGENTS_SETTING, DEFAULT_AGENTS = 'DD_AGENTS', 'gemini'
+# deploy/Dockerfile's build setting and its default, which deploy/compose.yaml repeats.
+AGENTS_SETTING, DEFAULT_AGENTS = 'DD_AGENTS', 'claude codex'
 HOME = Path('/home/dd')
 CHECKOUT = HOME / 'checkout'
 CONFIG = HOME / 'config'

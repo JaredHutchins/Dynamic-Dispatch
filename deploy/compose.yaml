@@ -8,8 +8,9 @@ services:
       dockerfile: deploy/Dockerfile
       args:
         # The agents to include, for example DD_AGENTS="claude codex gemini" on the
-        # host when building. Rebuild with --build after changing it.
-        DD_AGENTS: ${DD_AGENTS:-gemini}
+        # host when building; Claude Code and Codex without a choice, as in the
+        # Dockerfile. Rebuild with --build after changing it.
+        DD_AGENTS: ${DD_AGENTS:-claude codex}
     restart: unless-stopped
     # Reaps agent processes that outlive their parent, as systemd does on the Pi.
     init: true
