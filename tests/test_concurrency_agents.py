@@ -228,7 +228,7 @@ class TwoAgents(Base):
             if agent_cfg["display_name"] == "Codex":
                 return original(cfg, agent_cfg, prompt, tree, **kwargs)
             (tree / "partial.py").unlink()
-            return {"ok": True, "summary": "DD-DECISION-NEEDED\nThe requested edit is obsolete.\n\n"
+            return {"ok": True, "summary": "DD-DECISION-NEEDED\nNot done: change partial.py | Why: obsolete | Evidence: partial.py removed.\n\n"
                     "Docs: none needed, because only the existing code is retained."}
         with mock.patch.object(agents, "run", side_effect=decide), \
                 mock.patch.object(verify, "run_verify", wraps=verify.run_verify) as checked:

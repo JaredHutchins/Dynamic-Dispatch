@@ -133,6 +133,12 @@ for the setting and the other ways tests can get a helper.
 6. **You review and merge.** A status light on the pull request tells you when
    it is safe to merge. If you want changes, move the story back to In
    Progress and say what to change; an agent reworks the same branch.
+   DD says "needs your decision" only when the agent starts its final message
+   with `DD-DECISION-NEEDED` and lists at least one skipped instruction on a
+   `Not done:` line, with its reason and evidence, followed by the complete
+   summary. Agents must omit the marker when every instruction was carried out.
+   A marker alone gets normal review handling; without changes, it stays Blocked.
+   The marker is removed from pull request descriptions and Plane comments.
    Once you merge, DD moves the story to Done.
 
 While pull requests wait for review, DD keeps them up to date: when main moves

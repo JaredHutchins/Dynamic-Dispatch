@@ -1178,6 +1178,16 @@ agent changed anything. A refresh that needed an agent to repair a clash or
 failing tests voids it: DD comments on the pull request with the commit that
 changed it and sends an alert with sound, "PR #... changed since your
 approval". Rework you asked for voids it too, without that extra alert.
+A rework says "needs your decision" only if the agent's final message starts
+with `DD-DECISION-NEEDED` and includes at least one line in the format
+`Not done: <instruction> | Why: <reason> | Evidence: <file and line, or command output>`.
+The agent must omit the marker if it carried out every instruction. The comment
+shows the skipped items, then the complete summary. A valid request returns to
+In Review even if no changes were made, and waits for fresh approval. Without
+a valid request, changed work gets the normal review comment, alert and light;
+unchanged work remains Blocked. Marker lines are removed from pull request
+descriptions and Plane comments in either case.
+
 Without `github.approver`, green means up to date and tested, as before.
 
 The GitHub App (or the plain token, without an App) needs the
