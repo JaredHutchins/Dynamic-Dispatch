@@ -134,6 +134,7 @@ def load(path=None, *, allow_empty_projects=False):
     _check_self_update(cfg)
     _require(cfg, REQUIRED_TOP, "config.json")
     _require(cfg["sandbox"], ("user", "launcher"), "sandbox")
+    memory_limit_mb(cfg)
     _check_github(cfg["github"])
     _check_plane(cfg["plane"])
     _check_plane_login(cfg["plane"], "orchestrator_token", "orchestrator_bot", "plane")
@@ -568,3 +569,21 @@ def check_test_env_files(cfg):
             except (OSError, ValueError, KeyError):
                 raise ConfigError('Invalid test_env_file: check permissions, accounts and KEY=VALUE settings; '
                                   'HOME and PATH are reserved') from None
+
+
+def total_memory_mb():
+    """Machine RAM, rather than available memory or reserved address space."""
+    with open("/proc/meminfo") as source:
+        for line in source:
+            if line.startswith("MemTotal:"):
+                return int(line.split()[1]) // 1024
+    raise ConfigError("Cannot read machine total memory from /proc/meminfo")
+
+
+def memory_limit_mb(cfg):
+    value = cfg["sandbox"].get("memory_limit_mb")
+    if "memory_limit_mb" not in cfg["sandbox"]:
+        return max(1, total_memory_mb() * 40 // 100)
+    if type(value) is not int or value <= 0:
+        raise ConfigError("sandbox.memory_limit_mb must be a positive whole number")
+    return value

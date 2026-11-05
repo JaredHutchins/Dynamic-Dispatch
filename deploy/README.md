@@ -218,6 +218,11 @@ unquoted (including spaces) and escapes systemd's percent specifiers:
 
 ## Set up config.json (manual reference)
 
+Every sandboxed run has a resident-memory limit: set `sandbox.memory_limit_mb`
+to a positive whole number of MB in `config.json`. If omitted, it defaults to
+40% of the machine's total RAM, leaving room for DD and the system when two
+agents run at once. Doctor shows the effective limit and warns above 75%.
+
 `python3 main.py --setup` (see "Guided setup") writes this file for you.
 DD reads its settings from `$DD_CHECKOUT/config.json`, which is never
 committed. Start from the example and make it readable only by you, as DD
@@ -631,6 +636,16 @@ invokes the independent rollback helper described below.
 
 ## Running stories side by side
 
+The launcher checks the total resident memory of the agent account once a
+second, including project helper programs, and kills that account's processes
+when they exceed the limit (normally within about two seconds). This covers
+agent runs, prepare commands, verification, combine re-tests, refreshes and
+main checks. It needs neither root nor systemd and does not limit virtual
+address space, so Node's large reservations remain supported. Agent memory
+stops move the story to Blocked without automatic retry. Test and prepare
+memory stops follow their existing failure paths; main test memory stops count
+as failing tests. No retry behavior changes.
+
 Each agent works on one story at a time, so with Claude and Codex up to two
 stories can run at once. A third story waits in In Progress with a comment
 explaining the wait. It starts by itself when an agent is free.
@@ -738,6 +753,12 @@ This shows the last five service log lines so you can check it started:
 The last line should say "watching ... polling every 30s".
 
 ## When a deploy file changes
+
+This memory-limit update requires reinstalling `dd-agent-run` with
+`sudo python3 deploy/dd-install` from the checkout. Doctor FAILs if the installed
+launcher differs from the checkout. An older launcher that rejects the memory
+option stops stories as Blocked with reinstall instructions; main is marked
+could-not-test, never red because of that mismatch.
 
 After pulling changes, set the variables and render fresh templates using
 “Choose the account and checkout” above. Install any changed deploy files below,

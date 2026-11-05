@@ -56,6 +56,34 @@ class Doctor(unittest.TestCase):
         self.host()
         self.fake_host()
 
+    def test_launcher_version_mismatch_fails_with_reinstall_steps(self):
+        self.installed_launcher = b'old launcher'
+        for in_container, remedy in ((False, 'sudo python3 deploy/dd-install'), (True, 'restart the container')):
+            reports = []
+            def require(ok):
+                if not ok:
+                    raise ValueError('failed')
+            def check(name, action, success, failure, **kwargs):
+                try:
+                    action()
+                except Exception:
+                    reports.append(('FAIL', name, failure))
+                else:
+                    reports.append(('OK', name, success))
+                    return True
+            with mock.patch.object(container, 'in_container', return_value=in_container):
+                doctor._check_installed(self.cfg, {'fake-private-name': 'fake-private-account'}, check, require)
+            self.assertTrue(any(status == 'FAIL' and name == 'Launcher version' and remedy in detail
+                                for status, name, detail in reports))
+
+    def test_memory_limit_report_and_warning(self):
+        for limit, status in ((750, 'OK'), (751, 'WARN')):
+            report = mock.Mock()
+            with mock.patch.object(doctor.config, 'total_memory_mb', return_value=1000):
+                doctor._check_memory({'sandbox': {'memory_limit_mb': limit}}, report)
+            self.assertEqual(report.call_args.args[0], status)
+            self.assertIn(f'{limit} MB', report.call_args.args[2])
+
     def test_short_test_secret_reports_setting_without_value(self):
         project = next(iter(self.cfg['projects'].values()))
         with tempfile.TemporaryDirectory() as directory:
@@ -89,6 +117,12 @@ class Doctor(unittest.TestCase):
     def fake_host(self):
         """Answer the doctor's host lookups from host()'s state, with every Git, systemctl and sudo call faked."""
         real_stat, real_lstat = os.stat, os.lstat
+        real_read_bytes = Path.read_bytes
+        launcher_bytes = (doctor.CHECKOUT / 'deploy/dd-agent-run').read_bytes()
+        self.installed_launcher = launcher_bytes
+        def read_bytes(path):
+            return self.installed_launcher if str(path) == doctor.LAUNCHER else real_read_bytes(path)
+        self.enterContext(mock.patch.object(Path, 'read_bytes', read_bytes))
 
         def fake_stat(real):
             def stat_(path, *args, **kwargs):
@@ -501,7 +535,12 @@ class Doctor(unittest.TestCase):
         self.assertIn('OK Agent 1 env file: No env file is configured', output)
 
     def test_env_file_is_never_read(self):
-        with mock.patch('builtins.open', side_effect=AssertionError('opened')) as opened:
+        real_open = open
+        def open_public_memory(path, *args, **kwargs):
+            if path == '/proc/meminfo':
+                return real_open(path, *args, **kwargs)
+            raise AssertionError('opened')
+        with mock.patch('builtins.open', side_effect=open_public_memory) as opened:
             self.run_doctor()
         self.assertFalse([c for c in opened.call_args_list if '/fake-private-env' in map(str, c.args)])
 

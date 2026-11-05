@@ -24,7 +24,7 @@ import json
 import shlex
 import sqlite3
 
-from . import alerts, agents, assessments, choose, combine, config, docs_line, github, gitops, mainhealth, plane, prepare, prompts, rework, runs, sync, verify
+from . import alerts, agents, assessments, choose, combine, config, docs_line, github, gitops, mainhealth, plane, prepare, proc, prompts, rework, runs, sync, verify
 from .redact import log, scrub, warn
 from .stories import story_ref
 
@@ -627,26 +627,29 @@ def execute(cfg, conn, run):
         return
     ctx, project_id, title, group, issue, rework_pr, existing, saved = started
 
-    if not _prepare(ctx, group, existing, saved):
-        return
-    if not ctx.needs_build and not _prepare_checkout(ctx, issue, True):
-        return
-    if not ctx.refresh and not _build(ctx, title, issue, rework_pr, saved, group):
-        return
-    combination = combine.with_main(ctx, issue, title, ctx.result)
-    if combination is None:
-        return
-    meanwhile, note = combination
-    if note:
-        ctx.retrying_pr = False  # a PR retry now has a new verified merge to upload
-        ctx.combined_note = note
+    try:
+        if not _prepare(ctx, group, existing, saved):
+            return
+        if not ctx.needs_build and not _prepare_checkout(ctx, issue, True):
+            return
+        if not ctx.refresh and not _build(ctx, title, issue, rework_pr, saved, group):
+            return
+        combination = combine.with_main(ctx, issue, title, ctx.result)
+        if combination is None:
+            return
+        meanwhile, note = combination
+        if note:
+            ctx.retrying_pr = False  # a PR retry now has a new verified merge to upload
+            ctx.combined_note = note
 
-    if mainhealth.hold(ctx.cfg, ctx.conn, ctx.run, ctx.worktree, ctx.result):
-        return
+        if mainhealth.hold(ctx.cfg, ctx.conn, ctx.run, ctx.worktree, ctx.result):
+            return
 
-    if ctx.refresh:
-        return _upload_refresh(ctx, project_id, meanwhile)
-    _upload_story(ctx, project_id, title)
+        if ctx.refresh:
+            return _upload_refresh(ctx, project_id, meanwhile)
+        _upload_story(ctx, project_id, title)
+    except proc.LauncherOutdated as e:
+        return ctx.fail(str(e))
 
 
 def _upload_refresh(ctx, project_id, meanwhile):

@@ -345,6 +345,14 @@ def run(cfg, agent_cfg, prompt, worktree, project_cfg=None):
         helpers=True,
     )
 
+    if proc.launcher_outdated(result):
+        raise proc.LauncherOutdated(proc.LAUNCHER_REINSTALL)
+    memory = proc.memory_stopped(result)
+    if memory is not None:
+        failed = _failed(f"The agent run used more than {memory} MB of memory and was stopped to protect the machine.")
+        failed["memory_stopped"] = True
+        return failed
+
     login_key = 'agent:' + logins.fingerprint((agent_cfg.get('run_as'), agent_cfg.get('env_file'),
                                                agent_cfg.get('parser')))
     pattern = LOGIN_PATTERNS[agent_cfg['parser']]

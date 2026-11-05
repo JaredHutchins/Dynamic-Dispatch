@@ -12,10 +12,11 @@ survives into DD's next step or the next run. A project's helper programs
 relies on one run at a time; concurrent runs will need a user or cgroup per run.
 """
 
+import re
 import subprocess
 import threading
 
-from . import redact, services
+from . import config, redact, services
 
 
 DEFAULT_OUTPUT_LIMIT = 2 * 1024 * 1024  # bytes kept from each end of a stream
@@ -131,6 +132,7 @@ def sandboxed(cfg, command, cwd, timeout, run_as=None, env_file=None, project_cf
         "sudo", "-n", "-u", run_as or sandbox["user"], sandbox["launcher"],
         "--cwd", str(cwd),
         "--timeout", str(int(timeout)),
+        "--memory-limit-mb", str(config.memory_limit_mb(cfg)),
     ]
     if env_file:
         wrapped += ["--env-file", env_file]
@@ -184,9 +186,11 @@ def run_sandboxed(cfg, command, cwd, timeout, run_as=None, env_file=None,
             )
         finally:
             problem = reap(cfg, run_as)
-        if marker is not None and marker.exists():
+        if launcher_outdated(result):
+            raise LauncherOutdated(LAUNCHER_REINSTALL)
+        if marker is not None and marker.exists() and memory_stopped(result) is None:
             result = Result(None, result.stdout, result.stderr.strip(), False, False, helpers_failed=True)
-    if problem:
+    if problem and memory_stopped(result) is None:
         return _refused(f"Could not clear the sandbox user's processes after the run: {problem}")
     return result
 
@@ -199,7 +203,40 @@ def _refused(message):
 TIMEOUT_EXIT_CODES = (124, 137)
 
 
+MEMORY_EXIT_CODE = 86
+LAUNCHER_REINSTALL = (
+    "The installed sandbox launcher (/usr/local/bin/dd-agent-run) is older than this version of "
+    "Dynamic Dispatch; reinstall it with sudo python3 deploy/dd-install"
+)
+
+
+class LauncherOutdated(Exception):
+    """The installed launcher cannot enforce the required sandbox limits."""
+
+
+def launcher_outdated(result):
+    return result.returncode == 64 and any(
+        line.startswith("usage: dd-agent-run --cwd DIR --timeout SECONDS")
+        for line in result.stderr.splitlines()
+    )
+
+
+def memory_stopped(result):
+    if result.returncode == MEMORY_EXIT_CODE:
+        match = re.search(r"^dd-agent-run: memory limit exceeded: ([1-9][0-9]*) MB$",
+                          result.stderr, re.MULTILINE)
+        if match:
+            return int(match[1])
+    return None
+
+
 def describe_failure(result, timeout):
+    if launcher_outdated(result):
+        raise LauncherOutdated(LAUNCHER_REINSTALL)
+    memory = memory_stopped(result)
+    if memory is not None:
+        return (f"Tests were stopped after using more than {memory} MB of memory; "
+                "look for a loop that never ends")
     if result.returncode is None and not result.timed_out:
         return result.stderr  # never started; see _refused
     if result.timed_out or result.returncode in TIMEOUT_EXIT_CODES:

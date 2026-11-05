@@ -317,7 +317,7 @@ class InstallLink(unittest.TestCase):
 
 class DoctorCheck(AppCase):
     def run_doctor(self):
-        cfg = dict(config(), db_path='fake-path', projects={})
+        cfg = dict(config(), db_path='fake-path', projects={}, sandbox={})
         out = io.StringIO()
         with mock.patch.object(doctor.config, 'load', return_value=cfg), \
                 mock.patch.object(Path, 'stat', return_value=mock.Mock(st_mode=0o100600)), \

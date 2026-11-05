@@ -121,6 +121,8 @@ def with_main(ctx, issue, title, result):
                     ctx.event("agent_finished", "Repair finished" if repair else "Repair stopped unexpectedly")
                 runs.record_usage(ctx.conn, ctx.run["id"], ctx.run["agent"], repair.get("usage"), repair.get("cost_usd"),
                                   additive=True)
+                if repair.get("memory_stopped"):
+                    return ctx.fail(repair["error"])
                 if repair.get("usage_limit"):
                     if ctx.refresh:
                         choose.cool_down(ctx.cfg, ctx.conn, ctx.run["agent"],

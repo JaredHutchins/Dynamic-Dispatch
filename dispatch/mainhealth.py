@@ -132,7 +132,7 @@ def execute(cfg, conn, run):
                 break
             failures.append(output)
             event("main_tests_failed", output)
-    except (gitops.GitError, NotTested) as e:
+    except (gitops.GitError, NotTested, proc.LauncherOutdated) as e:
         event("warning", f"Could not test main at {revision[:12]}; the next check retries: {e}")
         without_result(cfg, conn, project, "could not prepare the folder" if isinstance(e, gitops.GitError)
                        else "preparation or sandbox failed before tests")
@@ -174,6 +174,8 @@ def _verify(cfg, project_cfg, agent_cfg, folder):
     timeout = project_cfg.get("verify_timeout_seconds", verify.VERIFY_TIMEOUT)
     result = proc.run_sandboxed(cfg, project_cfg["verify_command"], cwd=folder, timeout=timeout,
                                 project_cfg=project_cfg, run_as=agent_cfg.get("run_as"), helpers=True)
+    if proc.launcher_outdated(result):
+        raise proc.LauncherOutdated(proc.LAUNCHER_REINSTALL)
     if result.returncode is None and not result.timed_out:
         raise NotTested(result.stderr)
     if result.timed_out or result.returncode != 0:
