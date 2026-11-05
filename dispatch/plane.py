@@ -17,7 +17,7 @@ from email.utils import parsedate_to_datetime
 import urllib.error
 import urllib.request
 
-from . import logins, plane_apps, runs
+from . import dropped, logins, plane_apps, runs
 from .redact import scrub, warn
 
 _identity_lock = threading.Lock()
@@ -134,7 +134,7 @@ class Plane:
                     return json.loads(body) if body else {}
             except urllib.error.HTTPError as e:
                 with e:
-                    detail = e.read().decode(errors="replace")[:500]
+                    detail = dropped.error_body(e)[:500]
                     delay = _retry_delay(e.headers.get("Retry-After")) if e.code == 429 else None
                 # Longer waits would block checks; let the next poll try again.
                 if e.code == 429 and attempt < RATE_LIMIT_RETRIES and delay <= RATE_LIMIT_MAX_DELAY:
@@ -152,6 +152,8 @@ class Plane:
                 raise PlaneError(scrub(f"{method} {path} -> {e.code}: {detail}"), status=e.code) from None
             except urllib.error.URLError as e:
                 raise PlaneError(scrub(f"{method} {path} -> {e.reason}")) from e
+            except dropped.DROPPED as e:
+                raise PlaneError(scrub(f"{method} {path} -> {dropped.reason('Plane', e)}")) from e
 
     def get(self, path):
         return self._request("GET", path)

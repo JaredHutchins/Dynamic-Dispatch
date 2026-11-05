@@ -17,7 +17,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from . import logins
+from . import dropped, logins
 from .redact import add_secret, scrub
 
 API = "https://api.github.com"
@@ -74,10 +74,12 @@ def _request(method, path, token, payload=None, *, login_key=None, expiry=False,
         with e:
             if e.code == 401 and report:
                 logins.login(key, name, where + " (HTTP 401)", True)
-            detail = e.read().decode(errors="replace")[:500]
+            detail = dropped.error_body(e)[:500]
             raise GitHubError(scrub(f"{method} {path} -> {e.code}: {detail}"), status=e.code) from None
     except urllib.error.URLError as e:
         raise GitHubError(scrub(f"{method} {path} -> {e.reason}")) from e
+    except dropped.DROPPED as e:
+        raise GitHubError(scrub(f"{method} {path} -> {dropped.reason('GitHub', e)}")) from e
 
 
 def _b64url(data):
