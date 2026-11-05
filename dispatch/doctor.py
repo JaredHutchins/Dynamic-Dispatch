@@ -10,7 +10,8 @@ import sys
 import http.client
 from urllib.parse import urlsplit
 
-from . import config, container, doctor_sandbox, github, gitops, plane, proc, push_login, runs, services, testenv
+from . import (config, container, doctor_sandbox, github, gitops, logins, plane, proc, push_expiry, push_login, runs,
+               services, testenv)
 from .redact import MIN_SECRET_LENGTH
 
 MIN_PYTHON = (3, 11)
@@ -222,6 +223,14 @@ def _check_plane(cfg, check, require):
         check(prefix + ' agent label', label, 'Agent label exists.',
               'Cannot verify agent label; set agent_label_id to a label in this project and check access.',
               service='Plane', credential='Plane Orchestrator token', skip=dependency)
+        # The push token warning goes in the Product Backlog, labelled Human so no agent builds it.
+        check(prefix + ' push token warning', lambda: require((project['states'].get('product_backlog')
+                                                              or project.get('cycles', {}).get('product_backlog_state'))
+                                                              and project.get('human_only_label_id')),
+              'The Product Backlog column and human_only_label_id are set for the Dynamic Dispatch push token warning.',
+              "The Product Backlog column (states.product_backlog or cycles.product_backlog_state) or "
+              "human_only_label_id isn't set, so the Dynamic Dispatch push token warning can't go on "
+              f'the board. {push_expiry.MISSING}.')
         for agent_index, name in enumerate(cfg['agents'], 1):
             if name not in config.project_agents(project):
                 continue
@@ -327,11 +336,50 @@ PUSH_REPORTS = {
 
 
 def _check_git(cfg, report):
+    expiries = {}
     for index, project in enumerate(cfg['projects'].values(), 1):
         result = push_login.check(project['repo_path'])
         status, advice = PUSH_REPORTS[result]
         reason = advice if result == gitops.PUSH_OK else push_login.RESULTS[result] + advice
         report(status, f'Git push login {index}', reason)
+        _check_push_expiry(project, f'Git push login {index} expiry', expiries, report)
+
+
+RENEW = 'regenerate it on GitHub, then run python3 main.py --save-push-login.'
+UNREAD = 'unread'
+
+
+def _check_push_expiry(project, name, expiries, report):
+    """When the token Git pushes with expires; GitHub is asked once for each distinct token."""
+    try:
+        token = gitops.push_login(project['repo_path'])
+    except Exception:
+        report('WARN', name, "couldn't read the saved Git push login for this repository.")
+        return
+    if not token:
+        report('SKIP', name, 'skipped: Git has no saved push login for this repository.')
+        return
+    fingerprint = logins.fingerprint(token)
+    if fingerprint not in expiries:
+        try:
+            expiries[fingerprint] = push_expiry.expiry(token)
+        except Exception:
+            expiries[fingerprint] = UNREAD
+    found = expiries[fingerprint]
+    if found == UNREAD:
+        report('WARN', name, "couldn't ask GitHub when the push token expires; check the network and run doctor again.")
+    elif found == push_expiry.REFUSED:
+        report('FAIL', name, 'GitHub refuses the push token; ' + RENEW)
+    elif found is None:
+        report('OK', name, "The push token doesn't expire.")
+    else:
+        left = push_expiry.remaining_days(found, datetime.now(timezone.utc))
+        if left <= 0:
+            report('FAIL', name, f'The push token expired on {push_expiry.day(found)}; ' + RENEW)
+        elif left <= push_expiry.WINDOW_DAYS:
+            report('WARN', name, f'The push token expires on {push_expiry.day(found)}; ' + RENEW)
+        else:
+            report('OK', name, f'The push token expires on {push_expiry.day(found)}.')
 
 
 def _check_agents(cfg, check, report, require):

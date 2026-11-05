@@ -287,6 +287,15 @@ CREATE TABLE IF NOT EXISTS self_update_restart (
     revision TEXT NOT NULL,
     title TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS push_token_items (
+    project TEXT NOT NULL,
+    token TEXT NOT NULL,
+    expiry TEXT NOT NULL,
+    issue_id TEXT NOT NULL,
+    closed INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (project, token, expiry)
+);
+CREATE TABLE IF NOT EXISTS push_token_notices (key TEXT PRIMARY KEY);
 """
 
 

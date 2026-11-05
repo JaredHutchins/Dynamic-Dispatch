@@ -27,7 +27,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 from . import logins, proc
-from .redact import scrub
+from .redact import add_secret, scrub
 
 GIT_TIMEOUT = 300
 GIT_OUTPUT_LIMIT = 256 * 1024
@@ -561,6 +561,30 @@ def saved_push_logins():
 def remove_push_login(username):
     """Remove a saved GitHub login from Git's credential store."""
     _credential("reject", username)
+
+
+def push_login(repo):
+    """The token Git itself would push the clone's origin with, or None if it has none.
+
+    Git's own credential lookup decides, so the login saved with --save-push-login
+    is found by the same rule a push uses. The token is masked as soon as it is
+    read; it stays in memory and is never put in an error or a command line.
+    """
+    if not (Path(repo) / ".git").is_dir():
+        return None
+    address = _git(["remote", "get-url", "origin"], repo).stdout.strip()
+    if urlsplit(address).scheme != "https" or "\n" in address:
+        return None
+    # The address goes on Git's input, as any login written into it must never be in a command line.
+    result = _git(["credential", "fill"], repo, check=False, env=NO_PROMPT, timeout=PUSH_CHECK_TIMEOUT,
+                  input_text=f"url={address}\n\n")
+    if result.timed_out or result.returncode != 0:
+        return None
+    fields = dict(line.partition("=")[::2] for line in result.stdout.splitlines())
+    token = fields.get("password") or None
+    if token:
+        add_secret(token)
+    return token
 
 
 @_serialized
