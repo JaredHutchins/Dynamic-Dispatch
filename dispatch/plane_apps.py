@@ -15,7 +15,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from . import logins
+from . import dropped, logins
 from .config import PLANE_BOT as KEYS
 from .redact import add_secret, scrub
 
@@ -110,11 +110,13 @@ def _fetch(origin, bot, scopes):
             body = resp.read()
     except urllib.error.HTTPError as e:
         with e:
-            detail = e.read().decode(errors="replace")
+            detail = dropped.error_body(e)
         raise BotLoginError(scrub(f"POST {TOKEN_PATH} -> {e.code}: {detail[:500]}"), status=e.code,
                             error=_error_word(detail)) from None
     except urllib.error.URLError as e:
         raise BotLoginError(scrub(f"POST {TOKEN_PATH} -> {e.reason}")) from e
+    except dropped.DROPPED as e:
+        raise BotLoginError(scrub(f"POST {TOKEN_PATH} -> {dropped.reason('Plane', e)}")) from e
     try:
         reply = json.loads(body)
     except ValueError:

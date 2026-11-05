@@ -1,6 +1,6 @@
 """Tests for recovery."""
 
-import os, sqlite3
+import http.client, os, sqlite3
 from pathlib import Path
 from unittest import mock
 from dispatch import agents, choose, github, gitops, proc, runs, sync, verify, worker
@@ -21,6 +21,7 @@ from helpers import (
     os,
     pr_failures,
     prs,
+    real_gh_request,
     sandbox_calls,
 )
 
@@ -529,6 +530,42 @@ class RetryPullRequest(Base):
         self.assertEqual(rows[-1]["pr_url"], pr["url"])
         self.assertEqual(board.issues["i1"]["state"], {"id": S_REV})
         self.assertIn(pr["url"], board.comments[-1][2])
+
+    def test_reply_lost_after_github_opened_the_pr_reuses_it_on_retry(self):
+        self.add_issue()
+        fake, dropped = github._request, []
+
+        def request(method, path, token, payload=None, **kwargs):
+            result = fake(method, path, token, payload, **kwargs)
+            if method == "POST" and path.endswith("/pulls") and not dropped:
+                # GitHub opened it, then closed the connection before replying.
+                dropped.append(path)
+                failure = http.client.RemoteDisconnected("Remote end closed connection without response")
+                with mock.patch("urllib.request.urlopen", side_effect=failure):
+                    real_gh_request(method, path, token, payload)
+            return result
+
+        with mock.patch.object(github, "_request", side_effect=request):
+            self.cycle()
+        [row] = self.run_rows()
+        self.assertEqual(row["status"], runs.FAILED, row)
+        self.assertIn("pull request could not be opened", row["error"])
+        self.assertIn("GitHub closed the connection without replying", row["error"])
+        self.assertIn("move the story back to In Progress", row["error"])
+        self.assertNotIn("Unexpected error", row["error"])
+        self.assertNotIn("RemoteDisconnected", row["error"])
+        self.assertEqual(board.issues["i1"]["state"], {"id": S_BLK})
+        [opened] = prs.values()
+        board.issues["i1"]["state"] = {"id": S_IP}
+        sandbox_calls.clear()
+        self.set_mode("fail")  # would block the story if it ran
+        self.cycle()
+        rows = self.run_rows()
+        self.assertEqual([r["status"] for r in rows], [runs.FAILED, runs.DONE], rows[-1])
+        self.assertEqual(len(sandbox_calls), 1)  # verify only
+        self.assertEqual(list(prs.values()), [opened])
+        self.assertEqual(rows[-1]["pr_url"], opened["url"])
+        self.assertEqual(board.issues["i1"]["state"], {"id": S_REV})
 
     def test_failing_twice_blocks_again_and_the_next_move_back_retries(self):
         pushed = self.block_at_pr()
