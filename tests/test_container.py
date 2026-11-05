@@ -122,14 +122,14 @@ class Bootstrap(Folders):
         return steps
 
     def test_first_start_clones_public_main_as_dd_before_anything_else(self):
-        self.assertEqual(self.run_bootstrap(), ['clone', 'decision', 'install', 'credential', 'drop'])
+        self.assertEqual(self.run_bootstrap(), ['clone', 'decision', 'install', 'drop'])
         self.assertIn(start.PUBLIC_REPO, self.output)
-        for path in (self.home, self.checkout, self.home / 'config', self.gemini_home):
+        for path in (self.home, self.checkout, self.home / 'config', self.agent_homes['claude'], self.agent_homes['codex']):
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o700)
 
     def test_normal_start_reinstalls_from_the_checkout_after_recovery(self):
         (self.checkout / '.git').mkdir()
-        self.assertEqual(self.run_bootstrap(), ['decision', 'install', 'credential', 'drop'])
+        self.assertEqual(self.run_bootstrap(), ['decision', 'install', 'drop'])
 
     def test_a_folder_that_is_not_a_checkout_stops_startup(self):
         (self.checkout / 'stray.txt').write_text('left behind\n')
@@ -145,7 +145,7 @@ class Bootstrap(Folders):
     def test_latched_recovery_waits_for_a_hand_then_starts(self):
         (self.checkout / '.git').mkdir()
         steps = self.run_bootstrap(decisions=(start.DOWN, start.DOWN, 0))
-        self.assertEqual(steps, ['decision'] * 3 + ['install', 'credential', 'drop'])
+        self.assertEqual(steps, ['decision'] * 3 + ['install', 'drop'])
         self.assertEqual(self.output.count('needs a hand'), 1)
         self.assertEqual(self.sleep.call_count, 2)
 
@@ -170,12 +170,16 @@ class Bootstrap(Folders):
                 looked_up = [call.args[0] for call in self.accounts.call_args_list]
                 self.assertEqual(looked_up, ['dd'] + [start.AGENT_ACCOUNTS[agent] for agent in agents])
 
-    def test_an_image_without_the_setting_included_only_gemini(self):
+    def test_an_image_without_the_setting_includes_claude_and_codex(self):
         (self.checkout / '.git').mkdir()
-        self.agent_homes['claude'].chmod(0o755)
+        for home in self.agent_homes.values():
+            home.chmod(0o755)
         os.environ.pop(start.AGENTS_SETTING, None)
-        self.assertEqual(self.run_bootstrap(), ['decision', 'install', 'credential', 'drop'])
-        self.assertEqual(stat.S_IMODE(self.agent_homes['claude'].stat().st_mode), 0o755)
+        self.assertEqual(self.run_bootstrap(), ['decision', 'install', 'drop'])
+        for agent, home in self.agent_homes.items():
+            self.assertEqual(stat.S_IMODE(home.stat().st_mode), 0o755 if agent == 'gemini' else 0o700)
+        looked_up = [call.args[0] for call in self.accounts.call_args_list]
+        self.assertEqual(looked_up, ['dd', 'dd-agent', 'dd-codex'])
 
     def test_an_unknown_or_empty_setting_stops_before_anything(self):
         self.home.chmod(0o755)
@@ -517,15 +521,22 @@ class Image(unittest.TestCase):
                                 env={'PATH': f'{bin_folder}:/usr/bin:/bin', 'DD_AGENTS': agents})
         return result, log.read_text().splitlines() if log.exists() else []
 
-    def test_marks_the_container_and_defaults_to_gemini(self):
-        self.assertIn('ARG DD_AGENTS=gemini\n', self.dockerfile)
+    def test_marks_the_container_and_defaults_to_claude_and_codex(self):
+        self.assertIn('ARG DD_AGENTS="claude codex"\n', self.dockerfile)
         self.assertIn('ENV DD_CONTAINER=1 PYTHONUNBUFFERED=1 DD_AGENTS="${DD_AGENTS}"\n', self.dockerfile)
         self.assertIn('dd-install --container --dd-user dd --agents $DD_AGENTS ', self.dockerfile)
         self.assertEqual(start.INSTALL[1:], ['deploy/dd-install', '--container', '--dd-user', 'dd', '--agents'])
-        self.assertEqual(start.DEFAULT_AGENTS, 'gemini')
+        self.assertEqual(start.DEFAULT_AGENTS, 'claude codex')
         self.assertEqual(start.AGENT_ACCOUNTS, installer.AGENTS)
         compose = (ROOT / 'deploy' / 'compose.yaml').read_text()
-        self.assertIn('        DD_AGENTS: ${DD_AGENTS:-gemini}\n', compose)
+        self.assertIn('        DD_AGENTS: ${DD_AGENTS:-claude codex}\n', compose)
+
+    def test_the_three_defaults_agree(self):
+        dockerfile = re.search(r'^ARG DD_AGENTS="([^"]*)"$', self.dockerfile, re.MULTILINE).group(1)
+        compose = (ROOT / 'deploy' / 'compose.yaml').read_text()
+        compose = re.search(r'^ +DD_AGENTS: \$\{DD_AGENTS:-([^}]*)\}$', compose, re.MULTILINE).group(1)
+        self.assertEqual(dockerfile, start.DEFAULT_AGENTS)
+        self.assertEqual(compose, start.DEFAULT_AGENTS)
 
     def test_installs_each_chosen_tool_at_a_pinned_version(self):
         for setting in ('claude', 'codex', 'gemini', 'claude codex gemini'):

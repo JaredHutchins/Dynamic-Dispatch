@@ -5,8 +5,8 @@
 FROM node:22-bookworm-slim
 
 # The agents the image includes, separated by spaces: any of claude, codex and gemini.
-# Gemini alone is what the image included before agents could be chosen.
-ARG DD_AGENTS=gemini
+# Without a choice it includes Claude Code and Codex, the agents the guides cover.
+ARG DD_AGENTS="claude codex"
 # Marks the container for the doctor and the guide; DD_AGENTS tells the start step and
 # the doctor which agents were built in.
 ENV DD_CONTAINER=1 PYTHONUNBUFFERED=1 DD_AGENTS="${DD_AGENTS}"
