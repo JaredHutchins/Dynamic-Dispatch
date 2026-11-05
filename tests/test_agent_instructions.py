@@ -54,5 +54,5 @@ class AgentInstructions(unittest.TestCase):
     def test_protocol_markers_are_unchanged(self):
         self.assertEqual(rework.MARKER, 'DD-DECISION-NEEDED')
         self.assertIn('DD-DECISION-NEEDED', rework.prompt('https://example.test/pull/1'))
-        self.assertEqual(rework.explanation('DD-DECISION-NEEDED\nEvidence'), 'Evidence')
+        self.assertIsNone(rework.explanation('DD-DECISION-NEEDED\nEvidence'))
         self.assertEqual(plans.question_marker('cycle'), '[dd:plan cycle]')

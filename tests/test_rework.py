@@ -12,19 +12,27 @@ from helpers import (Base, CLAUDE, GH, MainChanges, S_IP, S_REV, S_BLK, board,
                      comment_failures, fake_gh_request, git, pr_comments, prs, reviews, statuses,
                      temporary_directory)
 
-DETAIL = "Instruction: change deploy/README.md.\nNot carried out: already correct.\nEvidence: deploy/README.md:12."
+DETAIL = "Not done: change deploy/README.md | Why: already correct | Evidence: deploy/README.md:12."
 SUMMARY = rework.MARKER + "\n" + DETAIL
 
 
 class Marker(unittest.TestCase):
-    def test_exact_first_line_and_nonblank_explanation(self):
+    def test_exact_first_line_and_not_done_item(self):
         for summary in (None, "", rework.MARKER, rework.MARKER + "\n \t\n",
                         "\n" + SUMMARY, "Preface\n" + SUMMARY, " " + SUMMARY,
-                        rework.MARKER + " \nreason", rework.MARKER + ":\nreason"):
+                        rework.MARKER + " \nreason", rework.MARKER + ":\nreason", rework.MARKER + "\nNone was declined."):
             with self.subTest(summary=summary):
                 self.assertIsNone(rework.explanation(summary))
         self.assertEqual(rework.explanation(SUMMARY), DETAIL)
-        self.assertEqual(rework.explanation(rework.MARKER + "\r\nanything"), "anything")
+        self.assertEqual(rework.explanation(rework.MARKER + "\r\n" + DETAIL), DETAIL)
+        self.assertEqual(rework.explanation(SUMMARY + "\n" + DETAIL), DETAIL + "\n" + DETAIL)
+        self.assertEqual(rework.explanation(rework.MARKER + "\nNo changes made.\n" + DETAIL),
+                         DETAIL + "\n\nNo changes made.")
+        self.assertEqual(rework.explanation(SUMMARY + "\n" + rework.MARKER + " \nDone."), DETAIL + "\n\nDone.")
+
+    def test_marker_lines_are_removed_wherever_they_appear(self):
+        self.assertEqual(rework.without_marker(" " + rework.MARKER + " \nAll done.\n" + rework.MARKER), "All done.")
+        self.assertEqual(rework.without_marker(None), "")
 
     def test_migrates_old_store_and_preserves_saved_outcome_on_reopen(self):
         path = temporary_directory(self) / "runs.db"
@@ -64,7 +72,7 @@ class Decisions(Base):
         def agent(cfg, agent_cfg, prompt, worktree, project_cfg=None):
             self.prompt = prompt
             if changed:
-                (Path(worktree) / "another.py").write_text("VALUE = 42\n")
+                (Path(worktree) / "another.py").write_text(f"VALUE = {len(self.run_rows())}\n")
                 return {"ok": True, "summary": summary + "\n\nDocs: none needed, because another.py is internal."}
             return {"ok": True, "summary": summary}
         return mock.patch.object(agents, "run", side_effect=agent)
@@ -107,6 +115,9 @@ class Decisions(Base):
         prompt = rework.prompt("https://gh/pr/1")
         self.assertIn("After the declined instructions, also give your usual complete summary of what "
                       "you changed and why", prompt)
+        self.assertIn("ONLY when at least one instruction was not carried out", prompt)
+        self.assertIn("Otherwise, leave that line out", prompt)
+        self.assertIn("Not done: <instruction> | Why: <reason> | Evidence:", prompt)
         self.assertIn("becomes the pull request description", prompt)
         self.assertEqual(rework.prompt(None), "")
 
@@ -134,13 +145,17 @@ class Decisions(Base):
 
     def test_invalid_markers_block_rework_with_exact_existing_message(self):
         self.prepare()
-        for summary in ("No work needed", "Preface\n" + SUMMARY, rework.MARKER, rework.MARKER + "\n \t"):
+        for summary in ("No work needed", "Preface\n" + SUMMARY, rework.MARKER, rework.MARKER + "\n \t",
+                        rework.MARKER + "\nNone was declined."):
             with self.subTest(summary=summary), self.answer(summary):
                 board.issues["i1"]["state"] = {"id": S_IP}
                 self.cycle()
                 row = self.run_rows()[-1]
                 self.assertEqual(row["status"], runs.FAILED)
-                self.assertEqual(row["error"], f"Claude finished but changed nothing.\n\nIts summary:\n{summary}")
+                clean = rework.without_marker(summary)
+                self.assertEqual(row["error"], f"Claude finished but changed nothing.\n\nIts summary:\n{clean or '(none)'}")
+                self.assertEqual(board.issues["i1"]["state"], {"id": S_BLK})
+                self.assertNotIn(rework.MARKER, board.comments[-1][2])
                 self.assertFalse(row["needs_decision"])
         self.assertEqual(pr_comments, [])
 
@@ -158,7 +173,9 @@ class Decisions(Base):
 
     def test_changed_decision_follows_normal_path_and_flags_comment_and_alert(self):
         self.prepare()
-        with self.answer(changed=True), mock.patch.object(alerts, "send") as send:
+        second = "Not done: remove another.py | Why: still needed | Evidence: another.py:1."
+        summary = SUMMARY + "\n" + second + "\n\nUpdated another.py."
+        with self.answer(summary, changed=True), mock.patch.object(alerts, "send") as send:
             self.cycle()
         row = self.run_rows()[-1]
         self.assertEqual((row["status"], row["needs_decision"], row["no_changes"]), (runs.DONE, 1, 0))
@@ -169,9 +186,38 @@ class Decisions(Base):
         self.assertIn("Previous description", pr_comments[0][1])
         self.assertIn("needs your decision", board.comments[-1][2])
         self.assertNotIn("No changes made", board.comments[-1][2])
+        plain = text.html_to_text(board.comments[-1][2])
+        self.assertIn(DETAIL + "\n" + second + "\n\nUpdated another.py.", plain)
+        self.assertNotIn(rework.MARKER, plain)
         self.assertEqual(send.call_args.kwargs["suffix"], " needs your decision")
         self.assertEqual(send.call_args.kwargs["level"], "active")
         self.assertEqual(send.call_args.kwargs["url"], self.before["url"])
+
+    def test_changed_rework_without_valid_decision_uses_normal_review(self):
+        self.prepare()
+        for summary in (rework.MARKER + "\nAll instructions completed; none was declined.",
+                        "All instructions completed.", DETAIL):
+            with self.subTest(summary=summary):
+                board.issues["i1"]["state"] = {"id": S_IP}
+                with self.answer(summary, changed=True), mock.patch.object(alerts, "send") as send:
+                    self.cycle()
+                row = self.run_rows()[-1]
+                self.assertEqual((row["status"], row["needs_decision"]), (runs.DONE, 0))
+                self.assertEqual(board.issues["i1"]["state"], {"id": S_REV})
+                self.assertNotIn(rework.MARKER, prs["dd-7"]["body"])
+                self.assertNotIn(rework.MARKER, board.comments[-1][2])
+                self.assertNotIn("needs your decision", board.comments[-1][2])
+                self.assertEqual(send.call_args.kwargs["suffix"], " ready for review")
+                self.assertIsNone(row["decision_at"])
+                self.assertEqual(statuses[-1][1:], ("success", "Up to date and tested"))
+
+    def test_no_changes_summary_with_real_item_requests_decision(self):
+        self.prepare()
+        with self.answer(rework.MARKER + "\nNo changes made.\n" + DETAIL):
+            self.cycle()
+        row = self.run_rows()[-1]
+        self.assertEqual((row["status"], row["needs_decision"]), (runs.DONE, 1))
+        self.assertEqual(row["summary"], DETAIL + "\n\nNo changes made.")
 
     def test_comments_once_and_audible_alert_once_after_lost_plane_reply(self):
         self.prepare()

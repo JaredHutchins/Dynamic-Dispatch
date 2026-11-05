@@ -40,8 +40,10 @@ def prompt(pr_url):
         "The reviewer's latest instructions are in the story. Carry out every instruction you can. "
         "If, after investigating, a requested change should not be made (already done, obsolete, "
         "contradicts the current code, or would make it wrong), do not make it. "
-        f"Begin your final message with the exact line {MARKER}, then for each instruction not "
-        "carried out give the instruction, why, and evidence (file and line, or command output). "
+        "ONLY when at least one instruction was not carried out, begin your final message with "
+        f"the exact line {MARKER}. Otherwise, leave that line out. "
+        "List each instruction not carried out on its own line in this format: "
+        "Not done: <instruction> | Why: <reason> | Evidence: <file and line, or command output>. "
         "After the declined instructions, also give your usual complete summary of what you "
         "changed and why, because it becomes the pull request description when there are changes. "
         "If the story says the reviewer has already seen your objection and still wants the "
@@ -52,8 +54,16 @@ def prompt(pr_url):
 def explanation(summary):
     lines = (summary or "").splitlines()
     if lines and lines[0] == MARKER:
-        return "\n".join(lines[1:]).strip() or None
+        items = [line for line in lines[1:] if line.startswith("Not done:")]
+        if items:
+            rest = without_marker("\n".join(line for line in lines[1:] if not line.startswith("Not done:")))
+            return "\n".join(items) + ("\n\n" + rest if rest else "")
     return None
+
+
+def without_marker(summary):
+    """The summary with every marker line removed, so it never reaches a description or comment."""
+    return "\n".join(line for line in (summary or "").splitlines() if line.strip() != MARKER).strip()
 
 
 def finish(cfg, conn, run, result, changed, pulled_out, pr_url, worktree):
@@ -65,9 +75,13 @@ def finish(cfg, conn, run, result, changed, pulled_out, pr_url, worktree):
     interpretation of the explanation decides whether an objection is
     justified: that belongs to the reviewer.
     """
+    summary = result.get("summary")
+    detail = explanation(summary)
+    has_marker = any(line.strip() == MARKER for line in (summary or "").splitlines())
+    if has_marker:
+        result["summary"] = without_marker(summary)
     if pulled_out:
         return None
-    detail = explanation(result.get("summary"))
     if pr_url and detail:
         result["needs_decision"] = True
         result["summary"] = detail
@@ -82,7 +96,7 @@ def finish(cfg, conn, run, result, changed, pulled_out, pr_url, worktree):
         return None
     name = cfg["agents"][run["agent"]]["display_name"]
     reason = f"{name} finished but changed nothing.\n\nIts summary:\n{result.get('summary') or '(none)'}"
-    if not pr_url and MARKER in (result.get("summary") or "").splitlines():
+    if not pr_url and has_marker:
         reason += "\n\nA decision request only applies to rework of an open pull request."
     return reason
 
