@@ -3,7 +3,7 @@
 import json, os, stat
 from unittest import mock
 from pathlib import Path
-from dispatch import agents, choose, combine, github, gitops, plane, runs, sync, text, verify
+from dispatch import agents, choose, combine, github, gitops, plane, proc, runs, sync, text, verify
 import main as dd_main
 from helpers import (
     Base,
@@ -50,6 +50,43 @@ class CombineMain(Base):
                 mock.patch.object(verify, "run_verify", side_effect=check):
             self.cycle()
         return self.run_rows()[0], prompts
+
+    def test_memory_test_failure_keeps_existing_repair_path(self):
+        message = 'Tests were stopped after using more than 32 MB of memory; look for a loop that never ends'
+        row, prompts = self.combine(fail_tests=message)
+        self.assertEqual(row['status'], runs.DONE)
+        self.assertEqual(len(prompts), 2)
+        self.assertIn(message, prompts[1])
+
+    def test_repair_memory_stop_wins_even_when_conflict_markers_remain(self):
+        original = proc.run_sandboxed
+        agent_calls = []
+        def launch(cfg, command, **kwargs):
+            if 'fake_agent.py' in ' '.join(command):
+                agent_calls.append(command)
+                if len(agent_calls) == 2:
+                    return proc.Result(proc.MEMORY_EXIT_CODE, '', 'dd-agent-run: memory limit exceeded: 32 MB\n', False, False)
+            return original(cfg, command, **kwargs)
+        with mock.patch.object(proc, 'run_sandboxed', side_effect=launch):
+            row, prompts = self.combine(conflict=True)
+        self.assertEqual(len(prompts), 2)
+        self.assertEqual(row['status'], runs.FAILED)
+        self.assertIn('stopped to protect the machine', row['error'])
+
+    def test_old_launcher_during_combined_tests_does_not_start_repair(self):
+        original = proc.run_sandboxed
+        tests = []
+        def launch(cfg, command, **kwargs):
+            if 'fake_agent.py' not in ' '.join(command):
+                tests.append(command)
+                if len(tests) == 2:
+                    return proc.Result(64, '', 'usage: dd-agent-run --cwd DIR --timeout SECONDS -- COMMAND\n', False, False)
+            return original(cfg, command, **kwargs)
+        with mock.patch.object(proc, 'run_sandboxed', side_effect=launch):
+            row, prompts = self.combine()
+        self.assertEqual(len(prompts), 1)
+        self.assertEqual(row['status'], runs.FAILED)
+        self.assertIn(proc.LAUNCHER_REINSTALL, row['error'])
 
     def test_title_lookup_once_for_all_repair_comments(self):
         with mock.patch.object(github, "_request", wraps=fake_gh_request) as request:
@@ -401,6 +438,16 @@ class RefreshPullRequests(Base):
         prs["dd-7"]["state"] = "open"
         self.cycle()
         self.assertEqual(sum(e["type"] == "main_unchanged" for e in runs.events(self.conn)), 2)
+
+    def test_old_launcher_during_refresh_blocks_without_repair(self):
+        self.prepare()
+        result = proc.Result(64, '', 'usage: dd-agent-run --cwd DIR --timeout SECONDS -- COMMAND\n', False, False)
+        with mock.patch.object(proc, 'run_sandboxed', return_value=result), mock.patch.object(agents, 'run') as agent:
+            self.cycle()
+        agent.assert_not_called()
+        row = self.run_rows()[-1]
+        self.assertEqual(row['status'], runs.FAILED)
+        self.assertIn(proc.LAUNCHER_REINSTALL, row['error'])
 
     def test_refresh_combines_verifies_uploads_and_cleans_up(self):
         self.prepare()

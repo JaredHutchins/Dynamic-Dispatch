@@ -83,6 +83,15 @@ names from unittest, pytest, Jest, Vitest, Mocha, Go and Rust. Optional
 patterns stop config loading. Unrecognised failures still include test output.
 See [Add a project](deploy/README.md#add-a-project) for the pattern format.
 
+All sandbox commands, including agents, tests and project helpers, share their
+agent account's resident-memory limit. `sandbox.memory_limit_mb` sets a positive
+whole number of MB; the default is 40% of machine RAM. A run exceeding it is
+stopped within about two seconds. Agent memory stops block the story without
+automatic retry; tests and preparation keep their existing failure handling.
+Doctor reports the limit and checks the installed launcher matches the checkout.
+After this update, reinstall `dd-agent-run` with `sudo python3 deploy/dd-install`
+on hosts, or restart the container.
+
 Projects can set `test_env` string settings, a private `test_env_file`, and
 ordered `test_path` tool directories for prepare commands, tests, main checks
 and agent runs. `HOME` is protected; change `PATH` only through `test_path`.

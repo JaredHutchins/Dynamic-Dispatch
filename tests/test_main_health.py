@@ -5,7 +5,7 @@ import json
 import textwrap
 from unittest import mock
 
-from dispatch import alerts, choose, gitops, mainhealth, plane, runs, verify, worker
+from dispatch import alerts, choose, gitops, mainhealth, plane, proc, runs, verify, worker
 import main as dd_main
 from helpers import CODEX, HERE, Base, MainChanges, PY, board, git, sandbox_calls, fake_plane_request
 
@@ -77,6 +77,21 @@ class MainCheck(MainChanges, Base):
                                   side_effect=lambda cfg, project, message, undelivered: self.alerts.append((project, message)))
         patch.start()
         self.addCleanup(patch.stop)
+
+    def test_memory_stop_counts_as_failing_main_tests(self):
+        result = proc.Result(proc.MEMORY_EXIT_CODE, '', 'dd-agent-run: memory limit exceeded: 32 MB\n', False, False)
+        with mock.patch.object(proc, 'run_sandboxed', return_value=result) as run:
+            self.cycle()
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(self.health()['state'], mainhealth.RED)
+
+    def test_old_launcher_never_turns_main_red(self):
+        result = proc.Result(64, '', 'usage: dd-agent-run --cwd DIR --timeout SECONDS -- COMMAND\n', False, False)
+        with mock.patch.object(proc, 'run_sandboxed', return_value=result) as run:
+            self.cycle()
+        self.assertEqual(run.call_count, 1)
+        self.assertNotEqual((self.health() or {}).get('state'), mainhealth.RED)
+        self.assertEqual(self.main_runs()[0]['note'], 'Main could not be tested.')
 
     def outcomes(self, *steps):
         self.plan.write_text("\n".join(steps))

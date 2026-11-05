@@ -25,6 +25,15 @@ class Config(unittest.TestCase):
         c["github"]["private_key_path"] = str(key)
         return c
 
+    def test_memory_setting_validated_on_load(self):
+        cfg = self.base()
+        for value in (0, -1, True, 1.5, '32', None):
+            cfg['sandbox']['memory_limit_mb'] = value
+            with self.subTest(value=value), self.assertRaisesRegex(config.ConfigError, 'memory_limit_mb'):
+                config.load(self.write(cfg))
+        cfg['sandbox']['memory_limit_mb'] = 32
+        self.assertEqual(config.load(self.write(cfg))['sandbox']['memory_limit_mb'], 32)
+
     def test_verify_settings_validated_on_load(self):
         cfg = self.base()
         name, project = next(iter(cfg['projects'].items()))

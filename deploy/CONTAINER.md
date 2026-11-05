@@ -178,6 +178,11 @@ the mount removes the copy on the next start. Never mount a directory over
 
 ## 5. Build, start and configure
 
+Every sandboxed run has a resident-memory limit: set `sandbox.memory_limit_mb`
+to a positive whole number of MB in `config.json`. If omitted, it defaults to
+40% of the machine's total RAM, leaving room for DD and the system when two
+agents run at once. Doctor shows the effective limit and warns above 75%.
+
 Define this host shell helper so every command uses the same override and
 Compose project. In a new terminal, return to this checkout and set
 `DD_CONTAINER_OVERRIDE` (and `DD_GEMINI_CREDENTIAL`, with Gemini) again
@@ -438,6 +443,22 @@ does not prove DD is healthy. Move a small story to In Progress in Plane for
 each agent and check that it picks the story up.
 
 ## 8. Day to day
+
+The launcher checks the total resident memory of the agent account once a
+second, including project helper programs, and kills that account's processes
+when they exceed the limit (normally within about two seconds). This covers
+agent runs, prepare commands, verification, combine re-tests, refreshes and
+main checks. It needs neither root nor systemd and does not limit virtual
+address space, so Node's large reservations remain supported. Agent memory
+stops move the story to Blocked without automatic retry. Test and prepare
+memory stops follow their existing failure paths; main test memory stops count
+as failing tests. No retry behavior changes.
+
+After this update, `dd-agent-run` must be reinstalled. Restart the container:
+the start step reinstalls it from the checkout on every start. Doctor FAILs if
+the installed launcher differs and tells you to restart the container. A stale
+launcher stops stories as Blocked with reinstall instructions; a main check is
+could-not-test, not red.
 
 From the host, with the helper and variables from step 5:
 

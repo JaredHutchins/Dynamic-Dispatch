@@ -170,6 +170,7 @@ def run(path=None, *, project=None):
     else:
         report('OK', 'Bark', 'Alerts are not configured; no action needed.')
 
+    _check_memory(cfg, report)
     _check_plane(cfg, check, require)
     _check_github(cfg, check, report, require)
     check('Project test secrets', lambda: config.check_test_env_files(cfg),
@@ -182,6 +183,13 @@ def run(path=None, *, project=None):
     doctor_sandbox.check(cfg, accounts, CHECKOUT, path or config.DEFAULT_CONFIG_PATH, report)
     _check_services(cfg, accounts, check, report, require)
     return int(failed)
+
+
+def _check_memory(cfg, report):
+    limit = config.memory_limit_mb(cfg)
+    high = limit > config.total_memory_mb() * 75 // 100
+    report('WARN' if high else 'OK', 'Sandbox memory',
+           f'{limit} MB per agent account.' + (' This is above 75% of machine memory.' if high else ''))
 
 
 def _check_plane(cfg, check, require):
@@ -502,6 +510,12 @@ def _check_installed(cfg, accounts, check, require):
     launched = check('Launcher', lambda: launcher() or True, '/usr/local/bin/dd-agent-run is owned by root with mode 755.',
                      '/usr/local/bin/dd-agent-run is missing or not owned by root with mode 755; reinstall it as '
                      'deploy/README.md "When a deploy file changes" describes.')
+    def current_launcher():
+        require(Path(LAUNCHER).read_bytes() == (CHECKOUT / 'deploy/dd-agent-run').read_bytes())
+    remedy = ('restart the container' if container.in_container() else
+              'reinstall it with sudo python3 deploy/dd-install')
+    check('Launcher version', current_launcher, 'Installed launcher matches this checkout.',
+          'The installed sandbox launcher differs from this checkout; ' + remedy + '.')
     for index, name in enumerate(cfg['agents'], 1):
         def rule():
             # -l with a command only asks whether sudo would allow it; nothing runs.
